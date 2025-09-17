@@ -13,7 +13,56 @@ st.title("📊 Analyse – Satellitenwerte")
 # Eingabefeld für Ticker
 tickers_input = st.text_input(
     "Gib die Ticker (Yahoo Finance) ein, getrennt durch Komma:",
-    value="APP, LEU, XMTR, RHM.DE"
+    value= ticker_list = [
+    "BE",       # Bloom Energy A
+    "QBTS",     # D-Wave Quantum
+    "MP",       # MP Materials
+    "LEU",      # Centrus Energy
+    "APP",      # AppLovin
+    "RKLB",     # Rocket Lab
+    "KTOS",     # Kratos Defense & Security
+    "KOD",      # Kodiak Sciences
+    "SOFI",     # SoFi Technologies
+    "LITE",     # Lumentum
+    "LQDA",     # Liquidia Technologies
+    "AMSC",     # American Superconductor
+    "LMND",     # Lemonade
+    "TTMI",     # TTM Technologies
+    "XMTR",     # Xometry
+    "UEC",      # Uranium Energy
+    "BRPHF",    # Galaxy Digital (OTC)  # alternativ: "GLXY.TO" in Toronto
+    "FIX",      # Comfort Systems
+    "RCAT",     # Red Cat Holdings
+    "OPEN",     # Opendoor Technologies
+    "COOP",     # Mr. Cooper Group
+    "CDE",      # Coeur Mining
+    "GEV",      # GE Vernova
+    "AGX",      # Argan
+    "AEHR",     # Aehr Test Systems
+    "IESC",     # IES Holdings
+    "ATRO",     # Astronics
+    "AVGO",     # Broadcom
+    "INSM",     # Insmed
+    "BBAI",     # BigBear.ai
+    "TPR",      # Tapestry
+    "CVNA",     # Carvana
+    "RYTM",     # Rhythm Pharmaceuticals
+    "VST",      # Vistra Energy
+    "CAR",      # AVIS Budget
+    "BBIO",     # BridgeBio Pharma
+    "STEM",     # Stem
+    "APH",      # Amphenol
+    "NTES",     # NetEase
+    "CECO",     # CECO Environmental
+    "NRG",      # NRG Energy
+    "ALNY",     # Alnylam Pharmaceuticals
+    "MIRM",     # Mirum Pharmaceuticals
+    "WBD",      # Warner Bros Discovery
+    "DASH",     # DoorDash
+    "MGNI",     # Magnite
+    "HWM",      # Howmet Aerospace
+    "JBL",      # Jabil Circuit
+    "GLW"       # Corning
 )
 
 if st.button("🔄 Aktualisieren"):
