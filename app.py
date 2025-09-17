@@ -104,3 +104,7 @@ if st.button("🔄 Aktualisieren"):
     df = pd.DataFrame(result)
     df = df.sort_values(by="Gesamt", ascending=False)
     st.dataframe(df.reset_index(drop=True), use_container_width=True)
+st.write("Teste Ticker einzeln...")
+    for wkn in wkn_list:
+        data = yf.download(wkn, period="300d")
+        st.write(f"{wkn}: {'OK' if not data.empty else 'Keine Daten'}")
