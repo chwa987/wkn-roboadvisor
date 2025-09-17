@@ -5,41 +5,40 @@ import numpy as np
 from datetime import datetime, timedelta
 import warnings
 
-# Warnungen (FutureWarning etc.) ausblenden
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 st.set_page_config(page_title="📈 Momentum-Satelliten", layout="wide")
 st.title("📊 Analyse – Satellitenwerte")
 
-# Feste Ticker-Liste
-ticker_list = {
-    "AppLovin": "APP",
-    "Centrus Energy": "LEU",
-    "Xometry": "XMTR",
-    "Rheinmetall": "RHM.DE"
-}
+# Eingabefeld für Ticker
+tickers_input = st.text_input(
+    "Gib die Ticker (Yahoo Finance) ein, getrennt durch Komma:",
+    value="APP, LEU, XMTR, RHM.DE"
+)
 
 if st.button("🔄 Aktualisieren"):
+    ticker_list = [t.strip() for t in tickers_input.split(",") if t.strip()]
+
     end = datetime.today()
     start = end - timedelta(days=400)
 
     results = []
 
-    for name, ticker in ticker_list.items():
+    for ticker in ticker_list:
         try:
             data = yf.download(ticker, start=start, end=end, progress=False)
             if data.empty:
-                st.warning(f"⚠️ Keine Daten für {name} ({ticker}) geladen.")
-                results.append([name, None, None, None, None, None])
+                st.warning(f"⚠️ Keine Daten für {ticker} geladen.")
+                results.append([ticker, None, None, None, None, None, None])
                 continue
 
-            # Fallback: nutze Adj Close wenn vorhanden, sonst Close
+            # Fallback für Adj Close
             if "Adj Close" in data.columns:
                 data["Kurs"] = data["Adj Close"]
             else:
                 data["Kurs"] = data["Close"]
 
-            # Gleitende Durchschnitte
+            # GDs
             data["GD200"] = data["Kurs"].rolling(window=200).mean()
             data["GD130"] = data["Kurs"].rolling(window=130).mean()
 
@@ -60,22 +59,21 @@ if st.button("🔄 Aktualisieren"):
                 momjt = np.nan
 
             results.append([
-                name, round(last_close, 2),
+                ticker, round(last_close, 2),
                 round(abstand_gd200, 2), round(abstand_gd130, 2),
-                round(mom260, 2), round(momjt, 2)
+                round(mom260, 2), round(momjt, 2), None
             ])
 
         except Exception as e:
-            st.error(f"❌ Fehler bei {name} ({ticker}): {e}")
-            results.append([name, None, None, None, None, None])
+            st.error(f"❌ Fehler bei {ticker}: {e}")
+            results.append([ticker, None, None, None, None, None, None])
 
-    # DataFrame bauen
     df = pd.DataFrame(results, columns=[
-        "Aktie", "Kurs aktuell", "Abstand GD200 (%)",
-        "Abstand GD130 (%)", "MOM260 (%)", "MOMJT (%)"
+        "Ticker", "Kurs aktuell", "Abstand GD200 (%)",
+        "Abstand GD130 (%)", "MOM260 (%)", "MOMJT (%)", "Signal"
     ])
 
-    # Ranking (Summe der Ränge)
+    # Ranking
     rank_df = df.copy()
     for col in ["Abstand GD200 (%)", "Abstand GD130 (%)", "MOM260 (%)", "MOMJT (%)"]:
         if df[col].notna().any():
@@ -86,6 +84,16 @@ if st.button("🔄 Aktualisieren"):
     df["Momentum-Score"] = rank_df[
         [c for c in rank_df.columns if "Rank" in c]
     ].sum(axis=1, skipna=True)
+
+    # Interpretation (Ampel)
+    quantiles = df["Momentum-Score"].quantile([0.33, 0.66]).to_dict()
+    for i, row in df.iterrows():
+        if row["Momentum-Score"] <= quantiles[0.33]:
+            df.at[i, "Signal"] = "🟢 Stark"
+        elif row["Momentum-Score"] <= quantiles[0.66]:
+            df.at[i, "Signal"] = "🟡 Neutral"
+        else:
+            df.at[i, "Signal"] = "🔴 Schwach"
 
     df = df.sort_values("Momentum-Score").reset_index(drop=True)
 
