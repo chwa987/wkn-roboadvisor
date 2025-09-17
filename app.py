@@ -68,4 +68,4 @@ if st.button("🔄 Aktualisieren"):
         })
 
     df_results = pd.DataFrame(results)
-    df_results = df_results.sort_values(by="Score", ascending=False
+    df_results = df_results.sort_values(by="Score", ascending=False)
