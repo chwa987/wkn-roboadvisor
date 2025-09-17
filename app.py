@@ -68,4 +68,10 @@ if st.button("🔄 Aktualisieren"):
         })
 
     df_results = pd.DataFrame(results)
-    df_results = df_results.sort_values(by="Score", ascending=False)
+    df_results = df_results.sort_values(by="Score", ascending=False).reset_index(drop=True)
+
+    st.dataframe(df_results, use_container_width=True)
+    st.success("Daten aktualisiert.")
+
+else:
+    st.info("Gib WKNs ein und klicke auf 'Aktualisieren', um die Daten zu laden.")
