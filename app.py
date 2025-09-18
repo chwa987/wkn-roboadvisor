@@ -5,25 +5,25 @@ import numpy as np
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title="📊 Momentum Aktien App", layout="wide")
-st.title("📈 Momentum-Analyse mit gewichteter Formel")
+st.title("📈 Momentum-Analyse mit gewichteter, normalisierter Formel")
 
 # ----------------------------
 # Hilfsfunktionen
 # ----------------------------
 def get_series(data, column="Close"):
-    """Sichert, dass immer eine 1D-Serie zurückkommt."""
+    """Gibt immer eine 1D-Series zurück (robust gegen Multi-Columns)."""
     try:
         if column not in data:
             return pd.Series(dtype=float)
         s = data[column]
-        if isinstance(s, pd.DataFrame):  # mehrere Spalten -> nimm die erste
+        if isinstance(s, pd.DataFrame):
             s = s.iloc[:, 0]
         return pd.to_numeric(s, errors="coerce")
     except Exception:
         return pd.Series(dtype=float)
 
 def compute_indicators(price, idx_price, volume):
-    """Berechne die 6 Kennzahlen für eine Aktie."""
+    """Berechnet die 6 Kriterien. Höher = besser für alle."""
     if price.dropna().empty:
         return [np.nan]*6
 
@@ -46,12 +46,14 @@ def compute_indicators(price, idx_price, volume):
     else:
         momjt = np.nan
 
+    # Relative Stärke vs. S&P 500 (12M)
     if not idx_price.dropna().empty and len(idx_price) > 260 and np.isfinite(ret_12m):
         idx_ret12m = idx_price.iloc[-1] / idx_price.iloc[-260] - 1
         rel_str = ((1 + ret_12m) / (1 + idx_ret12m) - 1) * 100 if np.isfinite(idx_ret12m) else np.nan
     else:
         rel_str = np.nan
 
+    # Volumen-Score (heute / 50d-Durchschnitt)
     if not volume.dropna().empty and len(volume) > 50:
         vol50 = volume.rolling(50).mean().iloc[-1]
         vol_score = (volume.iloc[-1] / vol50) if np.isfinite(vol50) and vol50 != 0 else np.nan
@@ -60,20 +62,29 @@ def compute_indicators(price, idx_price, volume):
 
     return [abw200, abw130, mom260, momjt, rel_str, vol_score]
 
+# Gewichte der Formel (Mentor-Empfehlung)
+WEIGHTS = {
+    "Abstand GD200 (%)": 0.20,
+    "Abstand GD130 (%)": 0.15,
+    "MOM260 (%)":        0.25,
+    "MOMJT (%)":         0.15,
+    "Relative Stärke (%)": 0.15,
+    "Volumen-Score":     0.10
+}
+IND_COLS = list(WEIGHTS.keys())
+
 # ----------------------------
-# Streamlit UI
+# Inputs
 # ----------------------------
-uploaded_file = st.file_uploader("📂 Lade eine CSV mit Tickers + optional Name", type="csv")
-tickers_input = st.text_input("Oder gib Ticker ein (kommasepariert):", "APP, LEU, XMTR, RHM.DE")
+uploaded_file = st.file_uploader("📂 CSV mit 'Ticker' und optional 'Name' hochladen", type=["csv"])
+tickers_input = st.text_input("Oder Ticker eingeben (kommasepariert):", "APP, LEU, XMTR, RHM.DE")
 
 if uploaded_file:
     df_tickers = pd.read_csv(uploaded_file)
     if "Ticker" in df_tickers.columns:
-        ticker_list = df_tickers["Ticker"].dropna().tolist()
-        if "Name" in df_tickers.columns:
-            name_map = dict(zip(df_tickers["Ticker"], df_tickers["Name"]))
-        else:
-            name_map = {t: t for t in ticker_list}
+        ticker_list = df_tickers["Ticker"].dropna().astype(str).str.strip().tolist()
+        name_map = dict(zip(df_tickers["Ticker"].astype(str).str.strip(), 
+                            df_tickers.get("Name", df_tickers["Ticker"]).astype(str)))
     else:
         st.error("❌ CSV muss eine Spalte 'Ticker' enthalten.")
         ticker_list, name_map = [], {}
@@ -81,82 +92,100 @@ else:
     ticker_list = [t.strip() for t in tickers_input.split(",") if t.strip()]
     name_map = {t: t for t in ticker_list}
 
+# ----------------------------
+# Analyse
+# ----------------------------
 if st.button("🔄 Analyse starten") and ticker_list:
     end = datetime.today()
     start = end - timedelta(days=400)
 
-    # Benchmark: S&P 500
+    # Benchmark: S&P 500 (für Relative Stärke)
     idx = yf.download("^GSPC", start=start, end=end, progress=False, auto_adjust=True)
     idx_price = get_series(idx, "Close")
 
-    results = []
-
+    rows = []
     for ticker in ticker_list:
         try:
             data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
             price = get_series(data, "Close")
             volume = get_series(data, "Volume")
-
             if price.dropna().empty:
                 continue
 
-            indicators = compute_indicators(price, idx_price, volume)
-            labels = ["GD200", "GD130", "MOM260", "MOMJT", "RelStr", "VolScore"]
-
-            ind_df = pd.DataFrame([indicators], columns=labels)
-
-            # z-Standardisierung
-            z_scores = (ind_df - ind_df.mean()) / ind_df.std(ddof=0)
-
-            # Gewichte
-            weights = {
-                "GD200": 0.20,
-                "GD130": 0.15,
-                "MOM260": 0.25,
-                "MOMJT": 0.15,
-                "RelStr": 0.15,
-                "VolScore": 0.10
-            }
-
-            # gewichteter Score
-            score = 0
-            for col in labels:
-                if pd.notna(z_scores.at[0, col]):
-                    score += z_scores.at[0, col] * weights[col]
-
-            results.append([
-                None,  # Ampel-Signal
-                ticker,
-                name_map.get(ticker, ticker),
-                round(price.iloc[-1], 2),
-                *[round(x, 2) if pd.notna(x) else None for x in indicators],
-                round(score, 2)
-            ])
+            indicators = compute_indicators(price, idx_price, volume)  # 6 Werte
+            rows.append({
+                "Signal": None,
+                "Ticker": ticker,
+                "Name": name_map.get(ticker, ticker),
+                "Kurs aktuell": round(price.iloc[-1], 2),
+                "Abstand GD200 (%)": indicators[0],
+                "Abstand GD130 (%)": indicators[1],
+                "MOM260 (%)": indicators[2],
+                "MOMJT (%)": indicators[3],
+                "Relative Stärke (%)": indicators[4],
+                "Volumen-Score": indicators[5]
+            })
         except Exception as e:
             st.warning(f"⚠️ Fehler bei {ticker}: {e}")
 
-    # DataFrame bauen
-    df = pd.DataFrame(results, columns=[
-        "Signal", "Ticker", "Name", "Kurs aktuell",
-        "Abstand GD200 (%)", "Abstand GD130 (%)",
-        "MOM260 (%)", "MOMJT (%)", "Relative Stärke (%)", "Volumen-Score",
-        "Momentum-Score"
-    ])
+    if not rows:
+        st.error("Keine verwertbaren Daten gefunden.")
+        st.stop()
 
-    # Ampel basierend auf Score
-    if not df["Momentum-Score"].isna().all():
-        quantiles = df["Momentum-Score"].quantile([0.33, 0.66]).to_dict()
-        for i, row in df.iterrows():
-            if row["Momentum-Score"] <= quantiles[0.33]:
-                df.at[i, "Signal"] = "🟢 Stark"
-            elif row["Momentum-Score"] <= quantiles[0.66]:
-                df.at[i, "Signal"] = "🟡 Neutral"
-            else:
-                df.at[i, "Signal"] = "🔴 Schwach"
+    df = pd.DataFrame(rows)
 
-    df = df.sort_values("Momentum-Score", ascending=True).reset_index(drop=True)
+    # --- Z-Standardisierung über das gesamte Universum ---
+    z_df = pd.DataFrame(index=df.index)
+    for col in IND_COLS:
+        col_series = pd.to_numeric(df[col], errors="coerce")
+        mu = col_series.mean(skipna=True)
+        sigma = col_series.std(ddof=0, skipna=True)
+        if pd.isna(sigma) or sigma == 0:
+            # keine Streuung -> neutraler Beitrag
+            z_df[col] = 0.0
+        else:
+            z_df[col] = (col_series - mu) / sigma
 
-    st.dataframe(df)
+    # --- Gewichteter Score ---
+    weight_vec = pd.Series(WEIGHTS)
+    df["Momentum-Score"] = (z_df[IND_COLS] * weight_vec).sum(axis=1, skipna=True)
 
-    csv_export = df.to_csv(index=False).encode("utf-8")
-    st.download_button("📥 Ergebnisse als CSV speichern", data=csv_export, file_name="momentum_scores.csv", mime="text/csv")
+    # --- Ampel (Quantile) ---
+    if df["Momentum-Score"].notna().sum() >= 3:
+        q33, q66 = df["Momentum-Score"].quantile([0.33, 0.66])
+    else:
+        # Fallback: Median-Schwelle
+        med = df["Momentum-Score"].median()
+        q33 = q66 = med
+
+    for i, s in df["Momentum-Score"].items():
+        if pd.isna(s):
+            df.at[i, "Signal"] = "⚪ n/a"
+        elif s >= q66:
+            df.at[i, "Signal"] = "🟢 Stark"
+        elif s >= q33:
+            df.at[i, "Signal"] = "🟡 Neutral"
+        else:
+            df.at[i, "Signal"] = "🔴 Schwach"
+
+    # --- Sortierung: höherer Score = besser ---
+    df = df.sort_values("Momentum-Score", ascending=False).reset_index(drop=True)
+
+    # Ampel vorne
+    cols = ["Signal", "Ticker", "Name", "Kurs aktuell"] + IND_COLS + ["Momentum-Score"]
+    df = df[cols]
+
+    # Runden für Anzeige
+    df_display = df.copy()
+    for c in ["Kurs aktuell", *IND_COLS, "Momentum-Score"]:
+        df_display[c] = pd.to_numeric(df_display[c], errors="coerce").round(2)
+
+    st.dataframe(df_display, use_container_width=True)
+
+    # Export
+    st.download_button(
+        "📥 Ergebnisse als CSV speichern",
+        data=df_display.to_csv(index=False).encode("utf-8"),
+        file_name="momentum_scores_weighted.csv",
+        mime="text/csv"
+    )
