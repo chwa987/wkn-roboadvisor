@@ -15,7 +15,7 @@ def safe_round(x, nd=2):
     """Rundet sicher. Gibt None zurück bei NaN/Fehler/Series."""
     try:
         if isinstance(x, (pd.Series, np.ndarray, list)):
-            x = np.array(x).flatten()[-1]  # letzten Wert nehmen
+            x = np.array(x).flatten()[-1]
         val = float(x)
         if np.isfinite(val):
             return round(val, nd)
@@ -27,6 +27,18 @@ def rank_numeric(series, ascending=False):
     """Robustes Ranking: cast zu numeric, NaNs erlaubt."""
     s = pd.to_numeric(series, errors="coerce")
     return s.rank(ascending=ascending, method="min")
+
+def get_series(data, column="Close"):
+    """Sichert, dass immer eine 1D-Serie zurückkommt."""
+    try:
+        if column not in data:
+            return pd.Series(dtype=float)
+        s = data[column]
+        if isinstance(s, pd.DataFrame):  # mehrere Spalten -> nimm die erste
+            s = s.iloc[:, 0]
+        return pd.to_numeric(s, errors="coerce")
+    except Exception:
+        return pd.Series(dtype=float)
 
 # ---------- Eingaben ----------
 uploaded_file = st.file_uploader("📂 CSV mit 'Ticker' und optional 'Name' hochladen", type="csv")
@@ -60,9 +72,7 @@ if st.button("🔄 Aktualisieren") and ticker_list:
     try:
         idx = yf.download("^GSPC", start=start, end=end, progress=False,
                           auto_adjust=True, actions=False, threads=False)
-        idx_price = pd.to_numeric(idx["Close"], errors="coerce").squeeze()
-        if not isinstance(idx_price, pd.Series):
-            idx_price = pd.Series(dtype=float)  # Fallback
+        idx_price = get_series(idx, "Close")
     except Exception as e:
         st.error(f"❌ Indexdaten (^GSPC) nicht geladen: {e}")
         idx_price = pd.Series(dtype=float)
@@ -78,9 +88,9 @@ if st.button("🔄 Aktualisieren") and ticker_list:
                 rows.append([None, ticker, name_map.get(ticker, ticker)] + [None]*7)
                 continue
 
-            # Preis & Volumen
-            price = pd.to_numeric(data["Close"], errors="coerce")
-            volume = pd.to_numeric(data.get("Volume", pd.Series(index=price.index, dtype=float)), errors="coerce")
+            # Preis & Volumen sauber extrahieren
+            price = get_series(data, "Close")
+            volume = get_series(data, "Volume")
 
             if price.dropna().empty:
                 st.warning(f"⚠️ Keine gültigen Schlusskurse für {ticker}.")
@@ -110,7 +120,7 @@ if st.button("🔄 Aktualisieren") and ticker_list:
                 momjt = np.nan
 
             # Relative Stärke
-            if not idx_price.empty and len(idx_price) > 260 and np.isfinite(ret_12m):
+            if not idx_price.dropna().empty and len(idx_price) > 260 and np.isfinite(ret_12m):
                 idx_ret12m = idx_price.iloc[-1] / idx_price.iloc[-260] - 1
                 rel_str = ((1 + ret_12m) / (1 + idx_ret12m) - 1) * 100 if np.isfinite(idx_ret12m) else np.nan
             else:
@@ -190,4 +200,4 @@ if st.button("🔄 Aktualisieren") and ticker_list:
         data=df.to_csv(index=False).encode("utf-8"),
         file_name="momentum_ergebnisse.csv",
         mime="text/csv"
-        )
+            )
