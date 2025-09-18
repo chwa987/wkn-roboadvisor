@@ -190,4 +190,4 @@ if st.button("🔄 Aktualisieren") and ticker_list:
         data=df.to_csv(index=False).encode("utf-8"),
         file_name="momentum_ergebnisse.csv",
         mime="text/csv"
-            )
+        )
