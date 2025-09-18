@@ -12,11 +12,10 @@ st.title("📊 Momentum-Analyse – Satellitenwerte")
 
 # ---------- Hilfsfunktionen ----------
 def safe_round(x, nd=2):
-    """Rundet sicher auf nd Stellen. Gibt None zurück bei NaN/inf/Fehler/Series."""
+    """Rundet sicher. Gibt None zurück bei NaN/Fehler/Series."""
     try:
-        # Falls Series/array: letzten Wert als float versuchen
-        if isinstance(x, (pd.Series, np.ndarray)):
-            x = x[-1]
+        if isinstance(x, (pd.Series, np.ndarray, list)):
+            x = np.array(x).flatten()[-1]  # letzten Wert nehmen
         val = float(x)
         if np.isfinite(val):
             return round(val, nd)
@@ -57,25 +56,29 @@ if st.button("🔄 Aktualisieren") and ticker_list:
     end = datetime.today()
     start = end - timedelta(days=400)
 
-    # Referenzindex für Relative Stärke (S&P 500)
+    # Referenzindex (S&P 500)
     try:
-        idx = yf.download("^GSPC", start=start, end=end, progress=False, auto_adjust=True, actions=False, threads=False)
-        idx_price = pd.to_numeric(idx.get("Close"), errors="coerce")
+        idx = yf.download("^GSPC", start=start, end=end, progress=False,
+                          auto_adjust=True, actions=False, threads=False)
+        idx_price = pd.to_numeric(idx["Close"], errors="coerce").squeeze()
+        if not isinstance(idx_price, pd.Series):
+            idx_price = pd.Series(dtype=float)  # Fallback
     except Exception as e:
         st.error(f"❌ Indexdaten (^GSPC) nicht geladen: {e}")
-        idx_price = None
+        idx_price = pd.Series(dtype=float)
 
     rows = []
 
     for ticker in ticker_list:
         try:
-            data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True, actions=False, threads=False, group_by="column")
+            data = yf.download(ticker, start=start, end=end, progress=False,
+                               auto_adjust=True, actions=False, threads=False)
             if data is None or len(data) == 0:
                 st.warning(f"⚠️ Keine Daten für {ticker}.")
                 rows.append([None, ticker, name_map.get(ticker, ticker)] + [None]*7)
                 continue
 
-            # Preis/Volumen als Series erzwingen
+            # Preis & Volumen
             price = pd.to_numeric(data["Close"], errors="coerce")
             volume = pd.to_numeric(data.get("Volume", pd.Series(index=price.index, dtype=float)), errors="coerce")
 
@@ -98,8 +101,7 @@ if st.button("🔄 Aktualisieren") and ticker_list:
                 mom260 = (last_close / price.iloc[-260] - 1) * 100
                 ret_12m = last_close / price.iloc[-260] - 1
             else:
-                mom260 = np.nan
-                ret_12m = np.nan
+                mom260, ret_12m = np.nan, np.nan
 
             if len(price) > 21 and np.isfinite(price.iloc[-21]) and np.isfinite(ret_12m):
                 ret_1m = last_close / price.iloc[-21] - 1
@@ -107,20 +109,17 @@ if st.button("🔄 Aktualisieren") and ticker_list:
             else:
                 momjt = np.nan
 
-            # Relative Stärke vs. Index (12M)
-            if idx_price is not None and len(idx_price) > 260 and np.isfinite(ret_12m):
+            # Relative Stärke
+            if not idx_price.empty and len(idx_price) > 260 and np.isfinite(ret_12m):
                 idx_ret12m = idx_price.iloc[-1] / idx_price.iloc[-260] - 1
-                if np.isfinite(idx_ret12m):
-                    rel_str = ((1 + ret_12m) / (1 + idx_ret12m) - 1) * 100
-                else:
-                    rel_str = np.nan
+                rel_str = ((1 + ret_12m) / (1 + idx_ret12m) - 1) * 100 if np.isfinite(idx_ret12m) else np.nan
             else:
                 rel_str = np.nan
 
-            # Volumen-Score (aktuelles Volumen / 50-Tage-Schnitt)
+            # Volumen-Score
             if not volume.dropna().empty and len(volume) > 50:
                 vol50 = volume.rolling(50).mean().iloc[-1]
-                vol_score = (volume.iloc[-1] / vol50) if (vol50 and np.isfinite(vol50) and vol50 != 0) else np.nan
+                vol_score = (volume.iloc[-1] / vol50) if np.isfinite(vol50) and vol50 != 0 else np.nan
             else:
                 vol_score = np.nan
 
@@ -134,7 +133,7 @@ if st.button("🔄 Aktualisieren") and ticker_list:
                 safe_round(mom260),
                 safe_round(momjt),
                 safe_round(rel_str),
-                safe_round(vol_score, nd=2)
+                safe_round(vol_score)
             ])
 
         except Exception as e:
@@ -144,29 +143,30 @@ if st.button("🔄 Aktualisieren") and ticker_list:
     # DataFrame
     df = pd.DataFrame(rows, columns=[
         "Signal", "Ticker", "Name", "Kurs aktuell",
-        "Abstand GD200 (%)", "Abstand GD130 (%)",
-        "MOM260 (%)", "MOMJT (%)",
+        "Abstand GD200 (%)", "Abstand GD130 (%)", "MOM260 (%)", "MOMJT (%)",
         "Relative Stärke (%)", "Volumen-Score"
     ])
 
-    # Alles numerisch machen (Ranking robuster)
-    numeric_cols = ["Kurs aktuell","Abstand GD200 (%)","Abstand GD130 (%)","MOM260 (%)","MOMJT (%)","Relative Stärke (%)","Volumen-Score"]
+    # Numerik erzwingen
+    numeric_cols = ["Kurs aktuell","Abstand GD200 (%)","Abstand GD130 (%)",
+                    "MOM260 (%)","MOMJT (%)","Relative Stärke (%)","Volumen-Score"]
     for c in numeric_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
     # Ranking
-    rank_cols = ["Abstand GD200 (%)","Abstand GD130 (%)","MOM260 (%)","MOMJT (%)","Relative Stärke (%)","Volumen-Score"]
+    rank_cols = ["Abstand GD200 (%)","Abstand GD130 (%)","MOM260 (%)",
+                 "MOMJT (%)","Relative Stärke (%)","Volumen-Score"]
     rank_df = pd.DataFrame({c+" Rank": rank_numeric(df[c], ascending=False) for c in rank_cols})
     df["Momentum-Score"] = rank_df.sum(axis=1, skipna=True)
 
-    # Ampel (terciles; Fallback bei wenig Werten)
-    valid = df["Momentum-Score"].dropna()
+    # Ampel
+    valid = np.array(df["Momentum-Score"].dropna(), dtype=float)
     if len(valid) >= 3:
         q33, q66 = np.nanpercentile(valid, [33, 66])
     elif len(valid) == 2:
         q33 = q66 = np.nanmedian(valid)
     elif len(valid) == 1:
-        q33 = q66 = valid.iloc[0]
+        q33 = q66 = valid[0]
     else:
         q33 = q66 = np.nan
 
@@ -180,7 +180,7 @@ if st.button("🔄 Aktualisieren") and ticker_list:
         else:
             df.at[i, "Signal"] = "🔴 Schwach"
 
-    # Sortierung & Anzeige
+    # Sortieren & anzeigen
     df = df.sort_values("Momentum-Score", na_position="last").reset_index(drop=True)
     st.dataframe(df)
 
