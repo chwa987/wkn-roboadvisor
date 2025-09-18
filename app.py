@@ -105,10 +105,13 @@ if st.button("🔄 Aktualisieren") and ticker_list:
             results.append([
                 None,  # Platzhalter für Signal
                 ticker, name_map.get(ticker, ticker),
-                round(last_close, 2),
-                round(abstand_gd200, 2), round(abstand_gd130, 2),
-                round(mom260, 2), round(momjt, 2),
-                round(rel_strength, 2), round(vol_score, 2)
+                round(last_close, 2) if last_close else None,
+                round(abstand_gd200, 2) if abstand_gd200 else None,
+                round(abstand_gd130, 2) if abstand_gd130 else None,
+                round(mom260, 2) if mom260 else None,
+                round(momjt, 2) if momjt else None,
+                round(rel_strength, 2) if rel_strength else None,
+                round(vol_score, 2) if vol_score else None
             ])
 
         except Exception as e:
@@ -123,12 +126,12 @@ if st.button("🔄 Aktualisieren") and ticker_list:
         "Relative Stärke (%)", "Volumen-Score"
     ])
 
-    # --- Ranking ---
+    # --- Ranking (mit robustem numeric cast) ---
     rank_df = df.copy()
     for col in ["Abstand GD200 (%)", "Abstand GD130 (%)", "MOM260 (%)",
                 "MOMJT (%)", "Relative Stärke (%)", "Volumen-Score"]:
         if df[col].notna().any():
-            rank_df[col + " Rank"] = rank_df[col].rank(ascending=False)
+            rank_df[col + " Rank"] = pd.to_numeric(df[col], errors="coerce").rank(ascending=False)
         else:
             rank_df[col + " Rank"] = np.nan
 
@@ -151,4 +154,13 @@ if st.button("🔄 Aktualisieren") and ticker_list:
     df = df.sort_values("Momentum-Score").reset_index(drop=True)
 
     # --- Ergebnis anzeigen ---
-    st.dataframe
+    st.dataframe(df)
+
+    # --- Export-Button ---
+    csv_export = df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="💾 Ergebnisse als CSV speichern",
+        data=csv_export,
+        file_name="momentum_ergebnisse.csv",
+        mime="text/csv"
+    )
