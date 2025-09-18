@@ -43,9 +43,9 @@ if st.button("🔄 Aktualisieren") and ticker_list:
     try:
         index_data = yf.download("^GSPC", start=start, end=end, progress=False)
         if "Adj Close" in index_data.columns:
-            index_data["Kurs"] = index_data["Adj Close"]
+            index_data["Kurs"] = index_data["Adj Close"].squeeze()
         else:
-            index_data["Kurs"] = index_data["Close"]
+            index_data["Kurs"] = index_data["Close"].squeeze()
     except Exception as e:
         st.error(f"❌ Fehler beim Laden des Index (^GSPC): {e}")
         index_data = None
@@ -61,11 +61,11 @@ if st.button("🔄 Aktualisieren") and ticker_list:
                                 None, None, None, None, None, None, None])
                 continue
 
-            # Fallback: Adj Close oder Close
+            # Fallback: Adj Close oder Close (mit squeeze)
             if "Adj Close" in data.columns:
-                data["Kurs"] = data["Adj Close"]
+                data["Kurs"] = data["Adj Close"].squeeze()
             else:
-                data["Kurs"] = data["Close"]
+                data["Kurs"] = data["Close"].squeeze()
 
             # Gleitende Durchschnitte
             data["GD200"] = data["Kurs"].rolling(window=200).mean()
@@ -151,13 +151,4 @@ if st.button("🔄 Aktualisieren") and ticker_list:
     df = df.sort_values("Momentum-Score").reset_index(drop=True)
 
     # --- Ergebnis anzeigen ---
-    st.dataframe(df)
-
-    # --- Export-Button ---
-    csv_export = df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        label="💾 Ergebnisse als CSV speichern",
-        data=csv_export,
-        file_name="momentum_ergebnisse.csv",
-        mime="text/csv"
-    )
+    st.dataframe
