@@ -1,7 +1,7 @@
 # app.py
 # Momentum-Screener mit Handlungsempfehlungen (Kaufen/Halten/Verkaufen)
 # Tabs: Analyse | Handlungsempfehlungen
-# GD20 entfernt; Sortierung bereinigt
+# Relative Stärke jetzt korrekt: z-Score vs. Universum
 
 import numpy as np
 import pandas as pd
@@ -94,18 +94,18 @@ def volume_score(vol_series: pd.Series, lookback=60):
 def compute_indicators(price_df: pd.DataFrame, volume_df: pd.DataFrame):
     """
     Berechnet pro Ticker:
-    - MOM260, MOMJT (90 Tage)
-    - Relative Stärke (90T %), RS z-Score (cross-sectional)
+    - MOM260, MOM130
+    - Relative Stärke (130T %), RS z-Score (cross-sectional)
     - Volumen-Score
     - Abstände zu GD50/GD200 + Signale
     - Momentum-Score (40/30/20/10)
     """
     results = []
 
-    # Universe-Renditen (90T) für RS
-    mom90_universe = {t: pct_change_over_window(price_df[t], 90) for t in price_df.columns}
-    mom90_series = pd.Series(mom90_universe).astype(float)
-    mu, sigma = mom90_series.mean(), mom90_series.std(ddof=0)
+    # Universe-Renditen (130T) für RS
+    mom130_universe = {t: pct_change_over_window(price_df[t], 130) for t in price_df.columns}
+    mom130_series = pd.Series(mom130_universe).astype(float)
+    mu130, sigma130 = mom130_series.mean(), mom130_series.std(ddof=0)
 
     for t in price_df.columns:
         s = price_df[t].dropna()
@@ -117,10 +117,10 @@ def compute_indicators(price_df: pd.DataFrame, volume_df: pd.DataFrame):
         sma200 = safe_sma(s, 200).iloc[-1]
 
         mom260 = pct_change_over_window(s, 260)
-        momJT  = pct_change_over_window(s, 90)
+        mom130 = pct_change_over_window(s, 130)
 
-        rs_90 = mom90_series.get(t, np.nan)
-        rs_z  = zscore_last(rs_90, mu, sigma) if not np.isnan(rs_90) else np.nan
+        rs_130 = mom130_series.get(t, np.nan)
+        rs_z   = (rs_130 - mu130) / sigma130 if not np.isnan(rs_130) and sigma130 > 0 else np.nan
 
         vol_sc = volume_score(volume_df.get(t, pd.Series(dtype=float)), lookback=60)
 
@@ -141,7 +141,7 @@ def compute_indicators(price_df: pd.DataFrame, volume_df: pd.DataFrame):
                 return np.nan
             return np.sign(x) * np.log1p(abs(x))
 
-        mom_part = 0.40 * logp(mom260) + 0.30 * logp(momJT)
+        mom_part = 0.40 * logp(mom260) + 0.30 * logp(mom130)
         rs_part  = 0.20 * (0 if pd.isna(rs_z) else rs_z)
         vol_part = 0.10 * (0 if pd.isna(vol_sc) else (vol_sc - 1.0))
 
@@ -153,8 +153,8 @@ def compute_indicators(price_df: pd.DataFrame, volume_df: pd.DataFrame):
             "Ticker": t,
             "Kurs aktuell": last,
             "MOM260 (%)": mom260,
-            "MOMJT (%)":  momJT,
-            "Relative Stärke (%)": rs_90,
+            "MOM130 (%)": mom130,
+            "Relative Stärke (130T) (%)": rs_130,
             "RS z-Score": rs_z,
             "Volumen-Score": vol_sc,
             "Abstand GD50 (%)": d50,
@@ -168,7 +168,6 @@ def compute_indicators(price_df: pd.DataFrame, volume_df: pd.DataFrame):
     if df.empty:
         return df
 
-    # Sortierung & Rank (bestes Momentum = Rank 1)
     df = df.sort_values("Momentum-Score", ascending=False).reset_index(drop=True)
     df["Rank"] = np.arange(1, len(df) + 1)
     return df
@@ -250,10 +249,7 @@ if df.empty:
     st.warning("Kennzahlen konnten nicht berechnet werden.")
     st.stop()
 
-# Namen mappen
 df["Name"] = df["Ticker"].map(name_map).fillna(df["Ticker"])
-
-# Ampeln für Signale
 df["_GD50_dot"]  = df["GD50-Signal"].apply(lambda s: dot("#16a34a") if s.startswith("Über") else dot("#dc2626"))
 df["_GD200_dot"] = df["GD200-Signal"].apply(lambda s: dot("#16a34a") if s.startswith("Über") else dot("#dc2626"))
 
@@ -265,12 +261,11 @@ tab1, tab2 = st.tabs(["🔬 Analyse", "🧭 Handlungsempfehlungen"])
 
 with tab1:
     st.subheader("Analyse – alle Kennzahlen")
-    # Immer sauber nach Momentum-Score sortiert (absteigend)
     df_sorted = df.sort_values("Momentum-Score", ascending=False).reset_index(drop=True)
     df_sorted["Rank"] = np.arange(1, len(df_sorted) + 1)
     show_cols = [
         "Rank", "Ticker", "Name", "Kurs aktuell",
-        "MOM260 (%)", "MOMJT (%)", "Relative Stärke (%)", "RS z-Score", "Volumen-Score",
+        "MOM260 (%)", "MOM130 (%)", "Relative Stärke (130T) (%)", "RS z-Score", "Volumen-Score",
         "Abstand GD50 (%)", "Abstand GD200 (%)",
         "GD50-Signal", "GD200-Signal", "Momentum-Score"
     ]
@@ -281,7 +276,6 @@ with tab2:
 
     rec_df = df.copy()
     rec_df["Handlung"] = rec_df.apply(lambda r: rec_row(r, in_port, top_n=top_n, reserve=reserve_m), axis=1)
-    # Für die Anzeige immer nach Rank
     rec_df = rec_df.sort_values("Rank").reset_index(drop=True)
     rec_df["GD50"]  = rec_df["_GD50_dot"]
     rec_df["GD200"] = rec_df["_GD200_dot"]
