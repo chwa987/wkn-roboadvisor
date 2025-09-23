@@ -1,13 +1,13 @@
 # app.py
-# Momentum-Screener mit Handlungsempfehlungen (Kaufen/Halten/Verkaufen)
-# Tabs: Analyse | Handlungsempfehlungen
-# Relative Stärke jetzt korrekt: z-Score vs. Universum
+# Momentum-Screener mit Handlungsempfehlungen (Kaufen/Halten/Verkaufen) + Backtest
+# Relative Stärke 130T, GD20 entfernt, HTML-Dots fix
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 from datetime import datetime, timedelta
+import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Momentum-Screener", page_icon="📈", layout="wide")
 
@@ -60,6 +60,7 @@ def fetch_ohlc(ticker_list, start, end):
     volume = volume.reindex_like(price)
     return price, volume
 
+
 def pct_change_over_window(series: pd.Series, days: int) -> float:
     s = series.dropna()
     if len(s) < days + 1:
@@ -70,15 +71,18 @@ def pct_change_over_window(series: pd.Series, days: int) -> float:
         return np.nan
     return (end_val / start_val - 1.0) * 100.0
 
+
 def safe_sma(series: pd.Series, window: int) -> pd.Series:
     if series is None or series.empty:
         return series
     return series.rolling(window=window, min_periods=max(5, window // 5)).mean()
 
+
 def zscore_last(value: float, mean: float, std: float) -> float:
     if std is None or std == 0 or np.isnan(std):
         return 0.0
     return (value - mean) / std
+
 
 def volume_score(vol_series: pd.Series, lookback=60):
     """Volume-Multiplikator: aktuelles Vol / SMA(lookback). Caps (0.5 – 2.0)."""
@@ -90,6 +94,7 @@ def volume_score(vol_series: pd.Series, lookback=60):
         return np.nan
     ratio = cur / base
     return float(np.clip(ratio, 0.5, 2.0))
+
 
 def compute_indicators(price_df: pd.DataFrame, volume_df: pd.DataFrame):
     """
@@ -105,11 +110,11 @@ def compute_indicators(price_df: pd.DataFrame, volume_df: pd.DataFrame):
     # Universe-Renditen (130T) für RS
     mom130_universe = {t: pct_change_over_window(price_df[t], 130) for t in price_df.columns}
     mom130_series = pd.Series(mom130_universe).astype(float)
-    mu130, sigma130 = mom130_series.mean(), mom130_series.std(ddof=0)
+    mu, sigma = mom130_series.mean(), mom130_series.std(ddof=0)
 
     for t in price_df.columns:
         s = price_df[t].dropna()
-        if s.empty or len(s) < 60:
+        if s.empty or len(s) < 200:
             continue
 
         last = s.iloc[-1]
@@ -120,7 +125,7 @@ def compute_indicators(price_df: pd.DataFrame, volume_df: pd.DataFrame):
         mom130 = pct_change_over_window(s, 130)
 
         rs_130 = mom130_series.get(t, np.nan)
-        rs_z   = (rs_130 - mu130) / sigma130 if not np.isnan(rs_130) and sigma130 > 0 else np.nan
+        rs_z  = zscore_last(rs_130, mu, sigma) if not np.isnan(rs_130) else np.nan
 
         vol_sc = volume_score(volume_df.get(t, pd.Series(dtype=float)), lookback=60)
 
@@ -153,7 +158,7 @@ def compute_indicators(price_df: pd.DataFrame, volume_df: pd.DataFrame):
             "Ticker": t,
             "Kurs aktuell": last,
             "MOM260 (%)": mom260,
-            "MOM130 (%)": mom130,
+            "MOM130 (%)":  mom130,
             "Relative Stärke (130T) (%)": rs_130,
             "RS z-Score": rs_z,
             "Volumen-Score": vol_sc,
@@ -168,12 +173,15 @@ def compute_indicators(price_df: pd.DataFrame, volume_df: pd.DataFrame):
     if df.empty:
         return df
 
+    # Sortierung & Rank (bestes Momentum = Rank 1)
     df = df.sort_values("Momentum-Score", ascending=False).reset_index(drop=True)
     df["Rank"] = np.arange(1, len(df) + 1)
     return df
 
+
 def parse_ticker_input(s: str):
     return [t.strip().upper() for t in s.split(",") if t.strip()] if s else []
+
 
 def rec_row(row, in_port, top_n=10, reserve=2):
     """Kaufen/Halten/Verkaufen-Logik (GD50/GD200 + Rank)."""
@@ -197,8 +205,10 @@ def rec_row(row, in_port, top_n=10, reserve=2):
             return "🟡 Beobachten (Reserve)"
         return "—"
 
+
 def dot(color: str) -> str:
     return f"<span style='font-size:18px;color:{color}'>●</span>"
+
 
 # ---------------------------- #
 #          Sidebar             #
@@ -210,11 +220,11 @@ reserve_m = st.sidebar.number_input("Reserven (Nachrücker)", min_value=0, max_v
 start_date = st.sidebar.date_input("Startdatum (Datenabruf)", value=datetime.today() - timedelta(days=900))
 end_date   = st.sidebar.date_input("Enddatum", value=datetime.today())
 
-st.title("📊 Momentum-Analyse mit Handlungsempfehlungen (GD50/GD200)")
+st.title("📊 Momentum-Analyse mit Handlungsempfehlungen + Backtest")
 
 uploaded = st.file_uploader("CSV mit **Ticker** und optional **Name** hochladen", type=["csv"])
-tickers_txt = st.text_input("Oder Ticker (Yahoo Finance) eingeben, komma-getrennt:", "APP, LEU, XMTR, RHM.DE")
-portfolio_txt = st.text_input("(Optional) Aktuelle Portfolio-Ticker (für Halten/Verkaufen):", "LEU")
+tickers_txt = st.text_input("Oder Ticker (Yahoo Finance) eingeben, komma-getrennt:", "AAPL, MSFT, TSLA, NVDA")
+portfolio_txt = st.text_input("(Optional) Aktuelle Portfolio-Ticker (für Halten/Verkaufen):", "")
 
 name_map = {}
 if uploaded is not None:
@@ -249,27 +259,26 @@ if df.empty:
     st.warning("Kennzahlen konnten nicht berechnet werden.")
     st.stop()
 
+# Namen mappen
 df["Name"] = df["Ticker"].map(name_map).fillna(df["Ticker"])
+
+# Ampeln für Signale
 df["_GD50_dot"]  = df["GD50-Signal"].apply(lambda s: dot("#16a34a") if s.startswith("Über") else dot("#dc2626"))
 df["_GD200_dot"] = df["GD200-Signal"].apply(lambda s: dot("#16a34a") if s.startswith("Über") else dot("#dc2626"))
+df["GD50"]  = df["_GD50_dot"]
+df["GD200"] = df["_GD200_dot"]
 
 # ---------------------------- #
 #             Tabs             #
 # ---------------------------- #
 
-tab1, tab2 = st.tabs(["🔬 Analyse", "🧭 Handlungsempfehlungen"])
+tab1, tab2, tab3 = st.tabs(["🔬 Analyse", "🧭 Handlungsempfehlungen", "📈 Backtest"])
 
 with tab1:
     st.subheader("Analyse – alle Kennzahlen")
     df_sorted = df.sort_values("Momentum-Score", ascending=False).reset_index(drop=True)
     df_sorted["Rank"] = np.arange(1, len(df_sorted) + 1)
-    show_cols = [
-        "Rank", "Ticker", "Name", "Kurs aktuell",
-        "MOM260 (%)", "MOM130 (%)", "Relative Stärke (130T) (%)", "RS z-Score", "Volumen-Score",
-        "Abstand GD50 (%)", "Abstand GD200 (%)",
-        "GD50-Signal", "GD200-Signal", "Momentum-Score"
-    ]
-    st.dataframe(df_sorted[show_cols], use_container_width=True)
+    st.dataframe(df_sorted, use_container_width=True)
 
 with tab2:
     st.subheader("Handlungsempfehlungen – Kaufen / Halten / Verkaufen")
@@ -277,12 +286,6 @@ with tab2:
     rec_df = df.copy()
     rec_df["Handlung"] = rec_df.apply(lambda r: rec_row(r, in_port, top_n=top_n, reserve=reserve_m), axis=1)
     rec_df = rec_df.sort_values("Rank").reset_index(drop=True)
-    rec_df["GD50"]  = rec_df["_GD50_dot"]
-    rec_df["GD200"] = rec_df["_GD200_dot"]
-
-    buy_df  = rec_df[rec_df["Handlung"].str.startswith("🟢")].copy()
-    hold_df = rec_df[rec_df["Handlung"].str.startswith("🟡")].copy()
-    sell_df = rec_df[rec_df["Handlung"].str.startswith("🔴")].copy()
 
     def render_block(title, frame):
         st.markdown(f"### {title}")
@@ -292,8 +295,35 @@ with tab2:
         else:
             st.write(frame[cols].to_html(escape=False, index=False), unsafe_allow_html=True)
 
-    render_block("🟢 Kaufen", buy_df)
-    render_block("🟡 Halten / Beobachten", hold_df)
-    render_block("🔴 Verkaufen", sell_df)
+    render_block("🟢 Kaufen", rec_df[rec_df["Handlung"].str.startswith("🟢")])
+    render_block("🟡 Halten / Beobachten", rec_df[rec_df["Handlung"].str.startswith("🟡")])
+    render_block("🔴 Verkaufen", rec_df[rec_df["Handlung"].str.startswith("🔴")])
+
+with tab3:
+    st.subheader("Backtest (einfaches Modell)")
+
+    idx = prices.index
+    months = pd.date_range(start=idx.min(), end=idx.max(), freq="M")
+
+    equity = [1.0]
+    dates = [months[0]]
+
+    for d in months[1:]:
+        snap = df.copy()
+        snap = snap.sort_values("Momentum-Score", ascending=False).head(top_n)
+        ret = []
+        for t in snap["Ticker"]:
+            s = prices[t].loc[:d].dropna()
+            if len(s) > 1:
+                r = s.iloc[-1] / s.iloc[-2] - 1
+                ret.append(r)
+        if ret:
+            equity.append(equity[-1] * (1 + np.mean(ret)))
+            dates.append(d)
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(dates, equity)
+    ax.set_title("Backtest Equity Curve")
+    st.pyplot(fig)
 
 st.caption("Hinweis: Alles nur zu Informations- und Ausbildungszwecken.")
