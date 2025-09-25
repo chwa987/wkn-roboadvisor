@@ -269,6 +269,17 @@ with tab1:
 
 with tab2:
     st.subheader("Handlungsempfehlungen (GD50/GD200 + Rank)")
+
+    # Übersicht: Breadth & Exposure
+    breadth = (df["GD200-Signal"] == "Über GD200").mean()
+    exposure_now = breadth_to_exposure_tens(breadth)
+    effective_holdings_now = max(0, int(round(top_n * exposure_now)))
+
+    st.markdown(f"**Universe size:** {len(df)} Aktien")
+    st.markdown(f"**Anteil über GD200 (Breadth):** {breadth:.0%}")
+    st.markdown(f"**Discrete Exposure (10%-steps):** {int(exposure_now*10)} (von Top-{top_n})")
+    st.markdown(f"**Aktuelle Anzahl geplanter Holdings (Top-N angepasst):** {effective_holdings_now} (von Top-{top_n})")
+
     rec_df = df.copy()
     rec_df["Handlung"] = rec_df.apply(lambda r: rec_row(r, in_port, top_n=top_n, reserve=reserve_m), axis=1)
     rec_df = rec_df.sort_values("Rank").reset_index(drop=True)
@@ -280,19 +291,6 @@ with tab2:
 with tab3:
     st.subheader("Backtest")
 
-    # Breadth & Exposure bestimmen
-    last_row = df.copy()
-    breadth = (last_row["GD200-Signal"] == "Über GD200").mean()
-    exposure_now = breadth_to_exposure_tens(breadth)
-
-    st.markdown(f"**Universe size:** {len(df)} Aktien")
-    st.markdown(f"**Anteil über GD200 (Breadth):** {breadth:.0%}")
-    st.markdown(f"**Discrete Exposure (10%-steps):** {int(exposure_now*10)} (von Top-{top_n})")
-
-    effective_holdings_now = max(0, int(round(top_n * exposure_now)))
-    st.markdown(f"**Aktuelle Anzahl geplanter Holdings (Top-N angepasst):** {effective_holdings_now} (von Top-{top_n})")
-
-    # Dummy Equity-Kurve (Backtest-Modellierung könnte erweitert werden)
     eq = (prices.pct_change().mean(axis=1) + 1).cumprod()
     fig, ax = plt.subplots()
     ax.plot(eq.index, eq.values)
