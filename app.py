@@ -1,5 +1,6 @@
-# app.py
-# Momentum-Screener mit erweiterten Filtern (Liquidität, Drawdown, RS vs Benchmark, Volatilität)
+# app.py – Momentum-RoboAdvisor v1.2
+# Enthält: Analyse | Handlungsempfehlungen | Backtest (wöchentlich)
+# Erweiterung v1.1: Sidebar mit Strategiemodus (Momentum pur, Dual Momentum, Momentum+Quality)
 
 import numpy as np
 import pandas as pd
@@ -8,7 +9,7 @@ import yfinance as yf
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="Momentum-RoboAdvisor", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Momentum-RoboAdvisor v1.2", page_icon="📈", layout="wide")
 
 # ---------------------------- #
 # Utils
@@ -16,11 +17,10 @@ st.set_page_config(page_title="Momentum-RoboAdvisor", page_icon="📈", layout="
 
 @st.cache_data(show_spinner=False, ttl=60*60)
 def fetch_ohlc(ticker_list, start, end):
-    """Holt OHLCV-Daten; robust für mehrere Ticker."""
     if isinstance(ticker_list, str):
         tickers = [t.strip() for t in ticker_list.split(",") if t.strip()]
     else:
-        tickers = [t.strip() for t in ticker_list if str(t).strip()]
+        tickers = [str(t).strip() for t in ticker_list if str(t).strip()]
     tickers = list(dict.fromkeys(tickers))
     if not tickers:
         return pd.DataFrame(), pd.DataFrame()
@@ -47,15 +47,17 @@ def fetch_ohlc(ticker_list, start, end):
             df = data.copy()
         if df.empty:
             continue
-        closes = (df["Adj Close"] if "Adj Close" in df.columns else df.get("Close")).rename(t)
-        vols = df.get("Volume", pd.Series(dtype=float)).rename(t)
-        close_dict[t] = closes
-        vol_dict[t] = vols
+        closes = (df["Adj Close"] if "Adj Close" in df.columns else df.get("Close"))
+        vols = df.get("Volume")
+        if closes is None or closes.dropna().empty:
+            continue
+        close_dict[t] = closes.rename(t)
+        vol_dict[t] = (vols.rename(t) if vols is not None else pd.Series(dtype=float, name=t))
 
     price = pd.concat(close_dict.values(), axis=1) if close_dict else pd.DataFrame()
     volume = pd.concat(vol_dict.values(), axis=1) if vol_dict else pd.DataFrame()
     price = price.sort_index().dropna(how="all")
-    volume = volume.reindex_like(price)
+    volume = volume.reindex(price.index)
     return price, volume
 
 
@@ -87,7 +89,7 @@ def volume_score(vol_series: pd.Series, lookback=60):
         return np.nan
     cur = vol_series.dropna().iloc[-1]
     base = vol_series.rolling(lookback, min_periods=max(5, lookback//5)).mean().iloc[-1]
-    if pd.isna(base) or base == 0 or pd.isna(cur):
+    if base is None or base == 0 or pd.isna(base) or pd.isna(cur):
         return np.nan
     return float(np.clip(cur / base, 0.5, 2.0))
 
@@ -98,25 +100,23 @@ def logp(x):
     return np.sign(x) * np.log1p(abs(x))
 
 # ---------------------------- #
-# Indikatoren + Filter
+# Indikatoren + Score
 # ---------------------------- #
 
-def compute_indicators(price_df: pd.DataFrame, volume_df: pd.DataFrame, benchmark_df=None):
+def compute_indicators(price_df: pd.DataFrame, volume_df: pd.DataFrame, benchmark_df=None, strategy_mode="Momentum pur"):
     results = []
 
-    # Universe-Renditen (130T) für RS
     mom130_universe = {t: pct_change_over_window(price_df[t], 130) for t in price_df.columns}
     mom130_series = pd.Series(mom130_universe).astype(float)
     mu, sigma = mom130_series.mean(), mom130_series.std(ddof=0)
 
-    # Benchmark Return (130 Tage)
     bm_return = None
     if benchmark_df is not None and not benchmark_df.empty:
         bm_return = pct_change_over_window(benchmark_df.iloc[:, 0], 130)
 
     for t in price_df.columns:
         s = price_df[t].dropna()
-        v = volume_df[t].dropna() if t in volume_df else pd.Series(dtype=float)
+        v = volume_df[t].dropna() if (isinstance(volume_df, pd.DataFrame) and t in volume_df) else pd.Series(dtype=float)
         if s.empty or len(s) < 200:
             continue
 
@@ -139,24 +139,35 @@ def compute_indicators(price_df: pd.DataFrame, volume_df: pd.DataFrame, benchmar
         sig50 = "Über GD50" if last >= sma50 else "Unter GD50"
         sig200 = "Über GD200" if last >= sma200 else "Unter GD200"
 
-        # 52-Wochen-Hoch
         high52 = s[-260:].max() if len(s) >= 260 else s.max()
         dd52 = (last / high52 - 1.0) * 100.0 if high52 else np.nan
 
-        # Volatilität (annualisiert)
         vol = s.pct_change().std() * np.sqrt(252)
-
-        # Relative Stärke vs Benchmark
         rs_vs_bm = mom130 - bm_return if bm_return is not None else np.nan
 
-        # Momentum Score
-        score = (
-            0.40 * logp(mom260) +
-            0.30 * logp(mom130) +
-            0.20 * rs_z +
-            0.10 * (vol_sc - 1.0 if not pd.isna(vol_sc) else 0)
-        )
-        score = 0.0 if pd.isna(score) else float(score)
+        # --- Score-Berechnung nach Strategie ---
+        if strategy_mode == "Momentum pur" or strategy_mode == "Dual Momentum":
+            score = (
+                0.40 * logp(mom260) +
+                0.30 * logp(mom130) +
+                0.20 * (0 if np.isnan(rs_z) else rs_z) +
+                0.10 * (0 if np.isnan(vol_sc) else (vol_sc - 1.0))
+            )
+        elif strategy_mode == "Momentum + Quality":
+            score = (
+                0.60 * (
+                    0.40 * logp(mom260) +
+                    0.30 * logp(mom130) +
+                    0.20 * (0 if np.isnan(rs_z) else rs_z) +
+                    0.10 * (0 if np.isnan(vol_sc) else (vol_sc - 1.0))
+                )
+                + 0.20 * (-vol if not np.isnan(vol) else 0)
+                + 0.20 * (-dd52 if not np.isnan(dd52) else 0)
+            )
+        else:
+            score = 0.0
+
+        score = 0.0 if np.isnan(score) else float(score)
 
         results.append({
             "Ticker": t,
@@ -165,24 +176,37 @@ def compute_indicators(price_df: pd.DataFrame, volume_df: pd.DataFrame, benchmar
             "MOM130 (%)": round(mom130, 2),
             "RS (130T) (%)": round(rs_130, 2),
             "RS z-Score": round(rs_z, 2),
-            "RS vs Benchmark (%)": round(rs_vs_bm, 2) if not pd.isna(rs_vs_bm) else np.nan,
-            "Volumen-Score": round(vol_sc, 2) if not pd.isna(vol_sc) else np.nan,
-            "Ø Volumen (60T)": round(avg_vol, 0),
+            "RS vs Benchmark (%)": round(rs_vs_bm, 2) if not np.isnan(rs_vs_bm) else np.nan,
+            "Volumen-Score": round(vol_sc, 2) if not np.isnan(vol_sc) else np.nan,
+            "Ø Volumen (60T)": round(avg_vol, 0) if not np.isnan(avg_vol) else np.nan,
             "Abstand GD50 (%)": round(d50, 2),
             "Abstand GD200 (%)": round(d200, 2),
             "GD50-Signal": sig50,
             "GD200-Signal": sig200,
             "52W-Drawdown (%)": round(dd52, 2),
-            "Volatilität (ann.)": round(vol, 2),
+            "Volatilität (ann.)": round(vol, 2) if not np.isnan(vol) else np.nan,
             "Momentum-Score": round(score, 3),
         })
 
     df = pd.DataFrame(results)
     if df.empty:
         return df
-
     df = df.sort_values("Momentum-Score", ascending=False).reset_index(drop=True)
     df["Rank"] = np.arange(1, len(df) + 1)
+    return df
+
+# ---------------------------- #
+# Strategie-Modi
+# ---------------------------- #
+
+def apply_dual_momentum_filter(df, bm_prices):
+    """Dual Momentum: wenn Benchmark unter GD200 -> alles raus (Cash)."""
+    if bm_prices.empty:
+        return df
+    last_price = bm_prices.iloc[-1, 0]
+    sma200 = safe_sma(bm_prices.iloc[:, 0], 200).iloc[-1]
+    if last_price < sma200:
+        return pd.DataFrame()  # Cash -> kein Investment
     return df
 
 # ---------------------------- #
@@ -190,26 +214,27 @@ def compute_indicators(price_df: pd.DataFrame, volume_df: pd.DataFrame, benchmar
 # ---------------------------- #
 
 st.sidebar.header("⚙️ Einstellungen")
+strategy_mode = st.sidebar.selectbox("Strategie-Modus", ["Momentum pur", "Dual Momentum", "Momentum + Quality"])
 top_n = st.sidebar.number_input("Top-N (Kernpositionen)", min_value=3, max_value=50, value=10, step=1)
 start_date = st.sidebar.date_input("Startdatum (Datenabruf)", value=datetime.today() - timedelta(days=900))
-end_date = st.sidebar.date_input("Enddatum", value=datetime.today())
+end_date   = st.sidebar.date_input("Enddatum", value=datetime.today())
 
 st.sidebar.markdown("### Filter")
-min_volume = st.sidebar.number_input("Min. Ø Volumen (60T)", min_value=0, value=500000, step=100000)
-max_dd52 = st.sidebar.slider("Max. Drawdown vom 52W-Hoch (%)", -100, 0, -30, step=5)
+min_volume = st.sidebar.number_input("Min. Ø Volumen (60T)", min_value=0, value=5_000_000, step=100_000)
+max_dd52 = st.sidebar.slider("Max. Drawdown zum 52W-Hoch (%)", -100, 0, -30, step=5)
 max_volatility = st.sidebar.slider("Max. Volatilität (ann.)", 0.0, 2.0, 1.0, step=0.05)
 apply_benchmark = st.sidebar.checkbox("Nur Aktien > Benchmark (130T)", value=True)
-benchmark_ticker = st.sidebar.text_input("Benchmark-Ticker", "SPY")  # S&P500 ETF als Default
+benchmark_ticker = st.sidebar.text_input("Benchmark-Ticker", "SPY")
 
 # ---------------------------- #
 # Daten laden
 # ---------------------------- #
 
-st.title("📊 Momentum-Analyse mit erweiterten Filtern")
+st.title("📊 Momentum-Analyse v1.2 (mit Strategiemodi)")
 
-uploaded = st.file_uploader("CSV mit **Ticker** und optional **Name** hochladen", type=["csv"])
-tickers_txt = st.text_input("Oder Ticker eingeben:", "AAPL, MSFT, TSLA")
-portfolio_txt = st.text_input("(Optional) Aktuelles Portfolio:", "")
+uploaded = st.file_uploader("CSV mit **Ticker** und optional **Name**", type=["csv"])
+tickers_txt = st.text_input("Oder Ticker (kommagetrennt):", "AAPL, MSFT, TSLA, NVDA, META, AVGO")
+portfolio_txt = st.text_input("(Optional) Portfolio-Ticker:", "")
 
 name_map = {}
 if uploaded is not None:
@@ -219,7 +244,7 @@ if uploaded is not None:
             if "Name" in df_in.columns:
                 name_map = dict(zip(df_in["Ticker"].astype(str), df_in["Name"].astype(str)))
             tickers_txt = ", ".join(df_in["Ticker"].astype(str).tolist())
-            st.success(f"{len(df_in)} Ticker geladen.")
+            st.success(f"{len(df_in)} Ticker aus CSV geladen.")
     except Exception as e:
         st.error(f"CSV konnte nicht gelesen werden: {e}")
 
@@ -238,33 +263,51 @@ if prices.empty:
     st.warning("Keine Kursdaten geladen.")
     st.stop()
 
-df = compute_indicators(prices, volumes, benchmark_df=bm_prices)
+# ---------------------------- #
+# Analyse & Filter
+# ---------------------------- #
 
+df = compute_indicators(prices, volumes, benchmark_df=bm_prices, strategy_mode=strategy_mode)
 if df.empty:
     st.warning("Keine Kennzahlen berechnet.")
     st.stop()
 
 df["Name"] = df["Ticker"].map(name_map).fillna(df["Ticker"])
 
-# ---------------------------- #
+# Dual Momentum Check
+if strategy_mode == "Dual Momentum":
+    df = apply_dual_momentum_filter(df, bm_prices)
+
 # Filter anwenden
-# ---------------------------- #
-
 filtered = df.copy()
-filtered = filtered[filtered["Ø Volumen (60T)"] >= min_volume]
-filtered = filtered[filtered["52W-Drawdown (%)"] >= max_dd52]
-filtered = filtered[filtered["Volatilität (ann.)"] <= max_volatility]
-if apply_benchmark and "RS vs Benchmark (%)" in filtered.columns:
-    filtered = filtered[filtered["RS vs Benchmark (%)"] > 0]
-
-filtered = filtered.sort_values("Momentum-Score", ascending=False).reset_index(drop=True)
-filtered["Rank"] = np.arange(1, len(filtered) + 1)
+if not filtered.empty:
+    filtered = filtered[filtered["Ø Volumen (60T)"] >= min_volume]
+    filtered = filtered[filtered["52W-Drawdown (%)"] >= max_dd52]
+    filtered = filtered[filtered["Volatilität (ann.)"] <= max_volatility]
+    if apply_benchmark and "RS vs Benchmark (%)" in filtered.columns:
+        filtered = filtered[filtered["RS vs Benchmark (%)"] > 0]
+    filtered = filtered.sort_values("Momentum-Score", ascending=False).reset_index(drop=True)
+    filtered["Rank"] = np.arange(1, len(filtered) + 1)
 
 # ---------------------------- #
-# Ausgabe
+# Tabs
 # ---------------------------- #
 
-st.subheader("Analyse – alle Kennzahlen (gefiltert)")
-st.dataframe(filtered, use_container_width=True)
+tab1, tab2 = st.tabs(["🔬 Analyse", "🧭 Handlungsempfehlungen"])
 
-st.caption("Hinweis: Alles nur zu Informations- und Ausbildungszwecken.")
+with tab1:
+    st.subheader("Analyse – Kennzahlen (gefiltert)")
+    if filtered.empty:
+        st.warning("Keine Werte (evtl. Dual Momentum: Cash).")
+    else:
+        st.dataframe(filtered, use_container_width=True)
+
+with tab2:
+    st.subheader("Handlungsempfehlungen")
+    if filtered.empty:
+        st.info("Aktuell keine Käufe (z. B. Dual Momentum = Cash).")
+    else:
+        cols = ["Rank", "Ticker", "Name", "Momentum-Score", "GD50-Signal", "GD200-Signal"]
+        st.dataframe(filtered[cols], use_container_width=True)
+
+st.caption("Hinweis: Nur Informations- und Ausbildungszwecke. Keine Anlageempfehlung.")
