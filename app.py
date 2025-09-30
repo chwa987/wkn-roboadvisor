@@ -349,7 +349,7 @@ filtered["Rank"] = np.arange(1, len(filtered) + 1)
 # Tabs
 # ============================================================
 
-tab1, tab2, tab3 = st.tabs(["🔬 Analyse", "🧭 Handlungsempfehlungen", "📈 Backtest"])
+tab1, tab2, tab3 = st.tabs(["🔬 Analyse", "🧭 Handlungsempfehlungen", "📈 Backtest (wöchentlich)"])
 
 with tab1:
     st.subheader("Analyse – Kennzahlen (gefiltert)")
