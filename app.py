@@ -517,18 +517,168 @@ with tab4:
                     df_champ, success, total = compute_champions_scores(df_champ_in, start_date, end_date)
 
                 if not df_champ.empty:
-                    cols = ["Rank", "Ticker", "Name", "Sicherheitsscore", "Geo-PAK10",
-                            "Verlust-Ratio", "Gewinnkonstanz", "Buffett-Signal"]
-                    st.dataframe(df_champ[cols], use_container_width=True)
 
-                    st.markdown(f"**Erfolgreich berechnet:** {success}/{total} Aktien mit ≥10 Jahren Historie")
-                    st.download_button("📥 Ergebnisse (CSV)",
-                                       df_champ.to_csv(index=False).encode("utf-8"),
-                                       "champions_scores.csv",
-                                       "text/csv")
-                else:
-                    st.warning("Keine Champions-Scores berechnet.")
+# ============================================================
+# Champions-Analyse (Version 2.0 – FIX: immer 12y Historie)
+# ============================================================
+
+import math
+
+def _read_champions_csv(file) -> pd.DataFrame:
+    """Robustes Einlesen der Champions-CSV.
+    Erwartet mindestens 'Ticker'. 'Name' ist optional."""
+    import io
+    # 1) Versuch: Standard
+    try:
+        df = pd.read_csv(file)
+    except Exception:
+        # 2) Fallback: Semikolon
+        file.seek(0)
+        df = pd.read_csv(file, sep=";")
+
+    # Spalten vereinheitlichen
+    cols_lower = {c: c.strip().lower() for c in df.columns}
+    df.columns = [cols_lower[c] for c in df.columns]
+
+    # Mindestens 'ticker' muss existieren
+    if "ticker" not in df.columns:
+        # Falls erstes Feld Ticker enthält (Notlösung)
+        first_col = df.columns[0]
+        df = df.rename(columns={first_col: "ticker"})
+    if "name" not in df.columns:
+        df["name"] = df["ticker"]
+
+    # Aufräumen
+    df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+    df["name"] = df["name"].astype(str).str.strip()
+    df = df[df["ticker"] != ""].drop_duplicates(subset=["ticker"])
+    return df[["ticker", "name"]]
+
+
+def compute_champions_scores(tickers_df: pd.DataFrame, end):
+    """
+    Holt ca. 12 Jahre Historie via yfinance (unabhängig von der Sidebar)
+    und berechnet: GeoPAK10, Verlust-Ratio, Gewinnkonstanz, Sicherheitsscore.
+    """
+    end = pd.to_datetime(end)
+    start_12y = end - pd.DateOffset(years=12)
+
+    results = []
+    total = len(tickers_df)
+    parsed_ok = total  # bereits sauber eingelesen
+    success = 0
+
+    for _, row in tickers_df.iterrows():
+        ticker = str(row["ticker"]).strip().upper()
+        name = str(row["name"]).strip()
+
+        # Defensive Defaults
+        res = {
+            "Ticker": ticker, "Name": name,
+            "Sicherheitsscore": np.nan, "Geo-PAK10": np.nan,
+            "Verlust-Ratio": np.nan, "Gewinnkonstanz": np.nan,
+            "Buffett-Signal": "—"
+        }
+
+        try:
+            data = yf.download(
+                ticker,
+                start=start_12y,
+                end=end + pd.Timedelta(days=1),
+                auto_adjust=True,
+                progress=False,
+                threads=False,
+            )
+
+            if data is None or data.empty:
+                results.append(res)
+                continue
+
+            # Jahres-Returns
+            yearly = data["Close"].resample("Y").last().pct_change().dropna()
+            if len(yearly) < 10:
+                results.append(res)
+                continue
+
+            # ---- Kennzahlen ----
+            # GeoPAK10
+            geo = (np.prod(1 + yearly.tail(10)) ** (1/10) - 1) * 100
+
+            # Verlust-Ratio = Durchschnitt Verluste / Durchschnitt Gewinne (Betrag)
+            pos = yearly[yearly > 0]
+            neg = yearly[yearly < 0]
+            gains = pos.mean() if not pos.empty else np.nan
+            losses = neg.mean() if not neg.empty else np.nan
+            verlustratio = abs(losses / gains) if (pd.notna(gains) and pd.notna(losses) and gains != 0) else np.nan
+
+            # Gewinnkonstanz = % positive Jahre
+            gk = (len(pos) / len(yearly)) * 100
+
+            # Sicherheitsscore nach deiner Formel
+            if all(pd.notna([geo, verlustratio, gk])) and verlustratio > 0:
+                score = (geo ** 0.8) * (verlustratio ** -1.2) * ((gk / 100) ** 1.5)
+            else:
+                score = np.nan
+
+            # Buffett-Signal (Info, kein Ranking-Kriterium)
+            buffett = "Ja" if (pd.notna(score) and score >= 6) else "Nein"
+
+            res.update({
+                "Sicherheitsscore": round(float(score), 3) if pd.notna(score) else np.nan,
+                "Geo-PAK10": round(float(geo), 2) if pd.notna(geo) else np.nan,
+                "Verlust-Ratio": round(float(verlustratio), 2) if pd.notna(verlustratio) else np.nan,
+                "Gewinnkonstanz": round(float(gk), 1) if pd.notna(gk) else np.nan,
+                "Buffett-Signal": buffett
+            })
+            success += 1
+
+        except Exception:
+            pass  # res bleibt mit NaN
+
+        results.append(res)
+
+    df_out = pd.DataFrame(results)
+    if not df_out.empty:
+        # Score vor GeoPAK10 in der Anzeige
+        df_out = df_out.sort_values("Sicherheitsscore", ascending=False, na_position="last").reset_index(drop=True)
+        df_out["Rank"] = np.arange(1, len(df_out) + 1)
+    return df_out, parsed_ok, success, total
+
+
+# ---------------------------- #
+# Champions-Tab (UI)
+# ---------------------------- #
+
+tab4 = st.tabs(["🏆 Champions"])[0]
+with tab4:
+    st.subheader("🏆 Champions – Sicherheitsscore (live, 12 Jahre Historie)")
+
+    uploaded_champ = st.file_uploader("CSV mit Champions (mind. Spalte 'Ticker'; optional 'Name')",
+                                      type=["csv"], key="champ_upload_v2")
+
+    if uploaded_champ is not None:
+        try:
+            df_in = _read_champions_csv(uploaded_champ)
+            parsed = len(df_in)
+            st.markdown(f"**{parsed}/{parsed} ausgelesen.**")
+
+            with st.spinner("Berechne Champions-Scores …"):
+                df_champ, parsed_ok, success, total = compute_champions_scores(df_in, end=end_date)
+
+            if not df_champ.empty:
+                cols = ["Rank", "Ticker", "Name", "Sicherheitsscore", "Geo-PAK10",
+                        "Verlust-Ratio", "Gewinnkonstanz", "Buffett-Signal"]
+                st.dataframe(df_champ[cols], use_container_width=True)
+
+                st.markdown(f"**Erfolgreich berechnet:** {success}/{total} (≥10 Jahre Historie)")
+                st.download_button("📥 Ergebnisse (CSV)",
+                                   df_champ[cols].to_csv(index=False).encode("utf-8"),
+                                   "champions_scores.csv",
+                                   "text/csv")
+            else:
+                st.warning("Keine Champions-Scores berechnet (zu wenig Historie?).")
+
         except Exception as e:
-            st.error(f"Fehler beim Laden: {e}")
+            st.error(f"Fehler beim Laden/Berechnen: {e}")
     else:
-        st.info("Bitte CSV hochladen mit Spalten: 'Ticker', 'Name'.")
+        st.info("Bitte CSV hochladen. Mindestens 'Ticker' (Name optional).")
