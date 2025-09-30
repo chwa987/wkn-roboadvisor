@@ -398,3 +398,86 @@ with tab3:
                                "backtest_equity.csv", "text/csv")
 
 st.caption("Nur Informations- und Ausbildungszwecke. Keine Anlageempfehlung.")
+# ---------------------------- #
+# Champions-Analyse (Version 2.0)
+# ---------------------------- #
+
+import math
+
+def compute_champions_scores(df_in: pd.DataFrame):
+    """
+    Erwartet DataFrame mit Spalten:
+    'Ticker', 'Name', 'Geo-PAK10', 'Verlust-Ratio', 'Gewinnkonstanz'
+    Berechnet Sicherheitsscore und Buffett-Signale.
+    """
+    results = []
+
+    for _, row in df_in.iterrows():
+        try:
+            geo = float(row.get("Geo-PAK10", np.nan))
+            verlustratio = float(row.get("Verlust-Ratio", np.nan))
+            gk = float(row.get("Gewinnkonstanz", np.nan))
+
+            if math.isnan(geo) or math.isnan(verlustratio) or math.isnan(gk):
+                score = np.nan
+            else:
+                score = (geo ** 0.8) * (verlustratio ** -1.2) * ((gk / 100) ** 1.5)
+
+            # Buffett-Kriterien
+            unterbewertung = "Ja" if (not math.isnan(score) and score >= 6) else "Nein"
+            buffett_signal = "Ja" if unterbewertung == "Ja" else "Nein"
+
+            results.append({
+                "Ticker": row.get("Ticker", ""),
+                "Name": row.get("Name", ""),
+                "Geo-PAK10": geo,
+                "Verlust-Ratio": verlustratio,
+                "Gewinnkonstanz": gk,
+                "Sicherheitsscore": round(score, 3) if not math.isnan(score) else np.nan,
+                "Unterbewertung": unterbewertung,
+                "Buffett-Signal": buffett_signal
+            })
+        except Exception:
+            continue
+
+    df_out = pd.DataFrame(results)
+    if not df_out.empty:
+        df_out = df_out.sort_values("Sicherheitsscore", ascending=False).reset_index(drop=True)
+        df_out["Rank"] = np.arange(1, len(df_out) + 1)
+    return df_out
+
+
+# ---------------------------- #
+# Champions-Tab
+# ---------------------------- #
+
+tab4 = st.tabs(["🏆 Champions"])[0]
+
+with tab4:
+    st.subheader("🏆 Champions – Sicherheitsscore & Buffett-Signale")
+
+    uploaded_champ = st.file_uploader("CSV/Excel mit Champions-Daten", type=["csv", "xlsx"], key="champ_upload")
+
+    if uploaded_champ is not None:
+        try:
+            if uploaded_champ.name.endswith(".csv"):
+                df_champ_in = pd.read_csv(uploaded_champ)
+            else:
+                df_champ_in = pd.read_excel(uploaded_champ)
+
+            st.success(f"{len(df_champ_in)} Champions geladen.")
+
+            df_champ = compute_champions_scores(df_champ_in)
+
+            if not df_champ.empty:
+                st.dataframe(df_champ, use_container_width=True)
+                st.download_button("📥 Ergebnisse (CSV)",
+                                   df_champ.to_csv(index=False).encode("utf-8"),
+                                   "champions_scores.csv",
+                                   "text/csv")
+            else:
+                st.warning("Keine Scores berechnet (fehlende oder falsche Spaltennamen?).")
+        except Exception as e:
+            st.error(f"Fehler beim Laden: {e}")
+    else:
+        st.info("Bitte Datei mit Champions-Daten hochladen. Erwartet Spalten: 'Ticker', 'Name', 'Geo-PAK10', 'Verlust-Ratio', 'Gewinnkonstanz'.")
