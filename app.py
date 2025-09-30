@@ -345,9 +345,9 @@ if apply_benchmark and "RS vs Benchmark (%)" in filtered.columns:
 filtered = filtered.sort_values("Momentum-Score", ascending=False).reset_index(drop=True)
 filtered["Rank"] = np.arange(1, len(filtered) + 1)
 
-# ============================================================
+# ---------------------------- #
 # Tabs
-# ============================================================
+# ---------------------------- #
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "🔬 Analyse", 
@@ -362,27 +362,38 @@ with tab1:
 
 with tab2:
     st.subheader("Handlungsempfehlungen")
+    st.markdown(
+        f"**Gefiltertes Universum:** {metrics['universe_n']} Aktien  •  "
+        f"**>GD200:** {metrics['breadth_n']}/{metrics['universe_n']} ({metrics['breadth_share']:.0%})  •  "
+        f"**Exposure (10%-Stufen):** {metrics['steps']}  •  "
+        f"**Geplante Holdings:** {metrics['eff_holdings']} (von Top-{top_n})"
+    )
+
     rec_df = filtered.copy()
-    rec_df["Handlung"] = rec_df.apply(lambda r: "🟢 Kaufen" if r["Rank"] <= top_n else "—", axis=1)
+    rec_df["Handlung"] = rec_df.apply(lambda r: rec_row(r, portfolio, top_n=top_n), axis=1)
     cols = ["Rank", "Ticker", "Name", "Momentum-Score", "GD50-Signal", "GD200-Signal", "Handlung"]
     st.write(rec_df[cols].to_html(escape=False, index=False), unsafe_allow_html=True)
 
 with tab3:
-    st.subheader(f"Backtest – {mode}")
+    st.subheader("Backtest – wöchentlich (erster Handelstag der Woche)")
+    st.caption("Auswahl & Filter identisch zur Analyse; Equal-Weight; Kosten via Sidebar bps.")
+
     if st.button("▶️ Backtest starten"):
         with st.spinner("Berechne Backtest …"):
             bm_series = bm_prices.iloc[:, 0].copy() if not bm_prices.empty else None
-            eq_df, logs_df = run_backtest(
+            eq_df, logs_df = run_backtest_weekly(
                 prices, volumes, bm_series, start_date, end_date,
-                top_n=top_n, min_volume=min_volume,
-                max_dd52=max_dd52, max_volatility=max_volatility,
-                apply_benchmark=apply_benchmark, cost_bps=cost_bps,
-                slippage_bps=slip_bps, mode=mode
+                top_n=top_n,
+                min_volume=min_volume,
+                max_dd52=max_dd52,
+                max_volatility=max_volatility,
+                apply_benchmark=apply_benchmark,
+                cost_bps=cost_bps,
+                slippage_bps=slip_bps
             )
         if eq_df.empty:
             st.warning("Backtest lieferte keine Werte (zu wenig Daten oder zu strenge Filter?).")
         else:
-            # Benchmark-Kurve
             fig, ax = plt.subplots(figsize=(9,4))
             ax.plot(eq_df.index, eq_df["Equity"], label="Strategie")
             if bm_prices is not None and not bm_prices.empty:
@@ -390,19 +401,30 @@ with tab3:
                 if not bm_norm.empty:
                     bm_norm = (bm_norm / bm_norm.iloc[0])
                     ax.plot(bm_norm.index, bm_norm.values, label=f"Benchmark ({benchmark_ticker})", alpha=0.8)
-            ax.set_title(f"Equity-Kurve ({mode}-Rebalancing)")
+            ax.set_title("Equity-Kurve (wöchentliches Rebalancing)")
             ax.grid(True, alpha=0.3)
             ax.legend()
             st.pyplot(fig)
 
-            st.markdown("**Rebalance-Log (pro Periode):**")
+            st.markdown("**Rebalance-Log (pro Woche):**")
             st.dataframe(logs_df, use_container_width=True)
-            st.download_button("📥 Logs (CSV)", logs_df.to_csv(index=False).encode("utf-8"),
-                               "backtest_logs.csv", "text/csv")
-            st.download_button("📥 Equity (CSV)", eq_df.to_csv().encode("utf-8"),
-                               "backtest_equity.csv", "text/csv")
+            st.download_button("📥 Logs (CSV)", logs_df.to_csv(index=False).encode("utf-8"), "weekly_backtest_logs.csv", "text/csv")
+            st.download_button("📥 Equity (CSV)", eq_df.to_csv().encode("utf-8"), "weekly_backtest_equity.csv", "text/csv")
 
-st.caption("Nur Informations- und Ausbildungszwecke. Keine Anlageempfehlung.")
+with tab4:
+    st.subheader("Champions – Sicherheits-Score & Buffett-Kriterien")
+    uploaded_champ = st.file_uploader("CSV mit Champions (Ticker, Name)", type=["csv"])
+    if uploaded_champ is not None:
+        try:
+            df_champ = pd.read_csv(uploaded_champ)
+            if "Ticker" not in df_champ.columns:
+                st.error("CSV benötigt mindestens eine Spalte 'Ticker'.")
+            else:
+                st.info(f"{len(df_champ)} Champions aus CSV geladen.")
+                results = compute_champions_scores(df_champ["Ticker"].tolist())
+                st.dataframe(results, use_container_width=True)
+        except Exception as e:
+            st.error(f"Fehler beim Einlesen: {e}")
 
 # ---------------------------- #
 # Champions-Tab (GeoPAK10 + Buffett)
