@@ -1,5 +1,5 @@
 # app.py
-# Momentum-RoboAdvisor v1.3
+# Momentum-RoboAdvisor v2.0 mit Champions 
 # Mit Wahl: wöchentliches oder monatliches Rebalancing
 # Analyse, Handlungsempfehlungen, Exposure-Übersicht, Backtest
 
