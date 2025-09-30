@@ -398,53 +398,102 @@ with tab3:
                                "backtest_equity.csv", "text/csv")
 
 st.caption("Nur Informations- und Ausbildungszwecke. Keine Anlageempfehlung.")
-# ---------------------------- #
+
+# ============================================================
 # Champions-Analyse (Version 2.0)
-# ---------------------------- #
+# ============================================================
 
 import math
 
-def compute_champions_scores(df_in: pd.DataFrame):
+def compute_champions_scores(tickers_df: pd.DataFrame, start, end):
     """
-    Erwartet DataFrame mit Spalten:
-    'Ticker', 'Name', 'Geo-PAK10', 'Verlust-Ratio', 'Gewinnkonstanz'
-    Berechnet Sicherheitsscore und Buffett-Signale.
+    Erwartet DataFrame mit Spalten: 'Ticker', 'Name'
+    Holt 10 Jahre Kursdaten von yfinance und berechnet:
+    - GeoPAK10
+    - Verlust-Ratio
+    - Gewinnkonstanz
+    - Sicherheitsscore
+    - Buffett-Kriterien (vereinfachte Approximation)
     """
     results = []
+    total = len(tickers_df)
+    success = 0
 
-    for _, row in df_in.iterrows():
+    for _, row in tickers_df.iterrows():
+        ticker = str(row.get("Ticker", "")).strip()
+        name = str(row.get("Name", "")).strip()
+
+        if not ticker:
+            continue
+
         try:
-            geo = float(row.get("Geo-PAK10", np.nan))
-            verlustratio = float(row.get("Verlust-Ratio", np.nan))
-            gk = float(row.get("Gewinnkonstanz", np.nan))
+            data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+            if data is None or data.empty or len(data) < 252*10:
+                # Weniger als 10 Jahre Historie
+                results.append({
+                    "Ticker": ticker, "Name": name,
+                    "Geo-PAK10": np.nan, "Verlust-Ratio": np.nan,
+                    "Gewinnkonstanz": np.nan, "Sicherheitsscore": np.nan,
+                    "Buffett-Signal": "—"
+                })
+                continue
 
-            if math.isnan(geo) or math.isnan(verlustratio) or math.isnan(gk):
-                score = np.nan
-            else:
+            # Jahres-Returns
+            yearly = data["Close"].resample("Y").last().pct_change().dropna()
+            if len(yearly) < 10:
+                # Nicht genug Jahre für GEO-PAK10
+                results.append({
+                    "Ticker": ticker, "Name": name,
+                    "Geo-PAK10": np.nan, "Verlust-Ratio": np.nan,
+                    "Gewinnkonstanz": np.nan, "Sicherheitsscore": np.nan,
+                    "Buffett-Signal": "—"
+                })
+                continue
+
+            # GeoPAK10
+            geo = (np.prod(1 + yearly.tail(10)) ** (1/10) - 1) * 100
+
+            # Verlust-Ratio (Durchschnitt Verluste / Durchschnitt Gewinne)
+            gains = yearly[yearly > 0].mean() if not yearly[yearly > 0].empty else np.nan
+            losses = yearly[yearly < 0].mean() if not yearly[yearly < 0].empty else np.nan
+            verlustratio = abs(losses / gains) if (not math.isnan(gains) and not math.isnan(losses) and gains != 0) else np.nan
+
+            # Gewinnkonstanz (% positive Jahre)
+            gk = (len(yearly[yearly > 0]) / len(yearly)) * 100
+
+            # Sicherheitsscore
+            if not math.isnan(geo) and not math.isnan(verlustratio) and not math.isnan(gk):
                 score = (geo ** 0.8) * (verlustratio ** -1.2) * ((gk / 100) ** 1.5)
+            else:
+                score = np.nan
 
-            # Buffett-Kriterien
-            unterbewertung = "Ja" if (not math.isnan(score) and score >= 6) else "Nein"
-            buffett_signal = "Ja" if unterbewertung == "Ja" else "Nein"
+            # Buffett-Signal (sehr vereinfacht, hier nur Score-Proxy)
+            buffett_signal = "Ja" if (not math.isnan(score) and score > 5) else "Nein"
 
             results.append({
-                "Ticker": row.get("Ticker", ""),
-                "Name": row.get("Name", ""),
-                "Geo-PAK10": geo,
-                "Verlust-Ratio": verlustratio,
-                "Gewinnkonstanz": gk,
+                "Ticker": ticker,
+                "Name": name,
+                "Geo-PAK10": round(geo, 2) if not math.isnan(geo) else np.nan,
+                "Verlust-Ratio": round(verlustratio, 2) if not math.isnan(verlustratio) else np.nan,
+                "Gewinnkonstanz": round(gk, 1) if not math.isnan(gk) else np.nan,
                 "Sicherheitsscore": round(score, 3) if not math.isnan(score) else np.nan,
-                "Unterbewertung": unterbewertung,
                 "Buffett-Signal": buffett_signal
             })
+            success += 1
+
         except Exception:
-            continue
+            results.append({
+                "Ticker": ticker, "Name": name,
+                "Geo-PAK10": np.nan, "Verlust-Ratio": np.nan,
+                "Gewinnkonstanz": np.nan, "Sicherheitsscore": np.nan,
+                "Buffett-Signal": "—"
+            })
 
     df_out = pd.DataFrame(results)
     if not df_out.empty:
-        df_out = df_out.sort_values("Sicherheitsscore", ascending=False).reset_index(drop=True)
+        df_out = df_out.sort_values("Sicherheitsscore", ascending=False, na_position="last").reset_index(drop=True)
         df_out["Rank"] = np.arange(1, len(df_out) + 1)
-    return df_out
+    return df_out, success, total
 
 
 # ---------------------------- #
@@ -454,30 +503,32 @@ def compute_champions_scores(df_in: pd.DataFrame):
 tab4 = st.tabs(["🏆 Champions"])[0]
 
 with tab4:
-    st.subheader("🏆 Champions – Sicherheitsscore & Buffett-Signale")
+    st.subheader("🏆 Champions – Sicherheitsscore & Buffett-Kriterien")
 
-    uploaded_champ = st.file_uploader("CSV/Excel mit Champions-Daten", type=["csv", "xlsx"], key="champ_upload")
+    uploaded_champ = st.file_uploader("CSV mit Champions (Ticker, Name)", type=["csv"], key="champ_upload")
 
     if uploaded_champ is not None:
         try:
-            if uploaded_champ.name.endswith(".csv"):
-                df_champ_in = pd.read_csv(uploaded_champ)
+            df_champ_in = pd.read_csv(uploaded_champ)
+            if not {"Ticker", "Name"}.issubset(df_champ_in.columns):
+                st.error("CSV muss die Spalten 'Ticker' und 'Name' enthalten.")
             else:
-                df_champ_in = pd.read_excel(uploaded_champ)
+                with st.spinner("Berechne Champions-Scores …"):
+                    df_champ, success, total = compute_champions_scores(df_champ_in, start_date, end_date)
 
-            st.success(f"{len(df_champ_in)} Champions geladen.")
+                if not df_champ.empty:
+                    cols = ["Rank", "Ticker", "Name", "Sicherheitsscore", "Geo-PAK10",
+                            "Verlust-Ratio", "Gewinnkonstanz", "Buffett-Signal"]
+                    st.dataframe(df_champ[cols], use_container_width=True)
 
-            df_champ = compute_champions_scores(df_champ_in)
-
-            if not df_champ.empty:
-                st.dataframe(df_champ, use_container_width=True)
-                st.download_button("📥 Ergebnisse (CSV)",
-                                   df_champ.to_csv(index=False).encode("utf-8"),
-                                   "champions_scores.csv",
-                                   "text/csv")
-            else:
-                st.warning("Keine Scores berechnet (fehlende oder falsche Spaltennamen?).")
+                    st.markdown(f"**Erfolgreich berechnet:** {success}/{total} Aktien mit ≥10 Jahren Historie")
+                    st.download_button("📥 Ergebnisse (CSV)",
+                                       df_champ.to_csv(index=False).encode("utf-8"),
+                                       "champions_scores.csv",
+                                       "text/csv")
+                else:
+                    st.warning("Keine Champions-Scores berechnet.")
         except Exception as e:
             st.error(f"Fehler beim Laden: {e}")
     else:
-        st.info("Bitte Datei mit Champions-Daten hochladen. Erwartet Spalten: 'Ticker', 'Name', 'Geo-PAK10', 'Verlust-Ratio', 'Gewinnkonstanz'.")
+        st.info("Bitte CSV hochladen mit Spalten: 'Ticker', 'Name'.")
