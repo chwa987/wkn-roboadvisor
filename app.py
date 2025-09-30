@@ -374,7 +374,7 @@ with tab3:
                 apply_benchmark=apply_benchmark, cost_bps=cost_bps,
                 slippage_bps=slip_bps, mode=mode
             )
-if eq_df.empty:
+        if eq_df.empty:
             st.warning("Backtest lieferte keine Werte (zu wenig Daten oder zu strenge Filter?).")
         else:
             # Benchmark-Kurve
