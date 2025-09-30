@@ -277,7 +277,7 @@ start_date = st.sidebar.date_input("Startdatum (Datenabruf)", value=datetime.tod
 end_date   = st.sidebar.date_input("Enddatum", value=datetime.today())
 
 st.sidebar.markdown("### Filter")
-min_volume = st.sidebar.number_input("Min. Ø Volumen (60T)", min_value=0, value=5_000_000, step=100_000)
+min_volume = st.sidebar.number_input("Min. Ø Volumen (60T)", min_value=0, value=4_000_000, step=100_000)
 max_dd52 = st.sidebar.slider("Max. Drawdown zum 52W-Hoch (%)", -100, 0, -50, step=5)
 max_volatility = st.sidebar.slider("Max. Volatilität (ann.)", 0.0, 3.0, 2.0, step=0.05)
 apply_benchmark = st.sidebar.checkbox("Nur Aktien > Benchmark (130T)", value=True)
