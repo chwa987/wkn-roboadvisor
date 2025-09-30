@@ -1,16 +1,17 @@
 # app.py
-# Momentum-Strategie + Champions (GeoPAK10 & Buffett-Kriterien)
-# Version 2.0 (vollständig, keine Kürzungen)
+# Momentum-Screener mit erweiterten Filtern, Handlungsempfehlungen
+# und Backtest (monthly Rebalancing).
+#
+# Version 1.3.1 (stabil)
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
-import matplotlib.pyplot as plt
-import math
 from datetime import datetime, timedelta
+import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="RoboAdvisor", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Momentum-RoboAdvisor", page_icon="📈", layout="wide")
 
 # ======================================================================
 # Utils
@@ -18,7 +19,7 @@ st.set_page_config(page_title="RoboAdvisor", page_icon="📊", layout="wide")
 
 @st.cache_data(show_spinner=False, ttl=60*60)
 def fetch_ohlc(ticker_list, start, end):
-    """Download OHLCV für Ticker-Liste; gibt (price_df, volume_df)."""
+    """Download OHLCV für Ticker-Liste; gibt (price_df, volume_df) zurück."""
     if isinstance(ticker_list, str):
         tickers = [t.strip() for t in ticker_list.split(",") if t.strip()]
     else:
@@ -92,7 +93,7 @@ def logp(x):
     return np.sign(x) * np.log1p(abs(x))
 
 # ======================================================================
-# Momentum-Indikatoren
+# Indikatoren + Score
 # ======================================================================
 
 def compute_indicators(price_df: pd.DataFrame, volume_df: pd.DataFrame, benchmark_df=None):
@@ -166,70 +167,31 @@ def compute_indicators(price_df: pd.DataFrame, volume_df: pd.DataFrame, benchmar
     return df
 
 # ======================================================================
-# Champions (GeoPAK10 + Buffett)
+# Backtest (monthly)
 # ======================================================================
 
-def compute_champions_scores(tickers):
-    price_df, _ = fetch_ohlc(tickers, datetime.today() - timedelta(days=1300), datetime.today())
-    results = []
-    for t in tickers:
-        if t not in price_df.columns:
-            continue
-        s = price_df[t].dropna()
-        if len(s) < 260:
-            continue
-
-        mom260 = pct_change_over_window(s, 260)
-        mom130 = pct_change_over_window(s, 130)
-
-        # Dummy-Werte für Verlust-Ratio & Gewinnkonstanz
-        verlustratio = abs(mom130) / 100 if mom130 else 0.1
-        gewinnkonstanz = 80  # Dummy 80%
-
-        # GeoPAK10 Sicherheits-Score
-        try:
-            sicherheitsscore = math.pow(10, 0.8) * (verlustratio ** -1.2) * ((gewinnkonstanz/100) ** 1.5)
-        except Exception:
-            sicherheitsscore = np.nan
-
-        results.append({
-            "Ticker": t,
-            "Kurs aktuell": round(s.iloc[-1], 2),
-            "MOM260 (%)": round(mom260, 2),
-            "MOM130 (%)": round(mom130, 2),
-            "Sicherheits-Score": round(sicherheitsscore, 3),
-        })
-    df = pd.DataFrame(results)
-    df = df.sort_values("Sicherheits-Score", ascending=False).reset_index(drop=True)
-    df["Rank"] = np.arange(1, len(df) + 1)
-    return df
-
-# ======================================================================
-# Backtest (wöchentlich)
-# ======================================================================
-
-def weekly_first_trading_days(idx: pd.DatetimeIndex) -> list:
+def monthly_first_trading_days(idx: pd.DatetimeIndex) -> list:
     s = pd.Series(1, index=idx)
-    grp = s.groupby(pd.Grouper(freq="W-MON"))
+    grp = s.groupby(pd.Grouper(freq="M"))
     firsts = []
     for _, g in grp:
         if not g.empty:
             firsts.append(g.index[0])
     return firsts
 
-def run_backtest_weekly(prices: pd.DataFrame,
-                        volumes: pd.DataFrame,
-                        benchmark: pd.Series | None,
-                        start_date,
-                        end_date,
-                        top_n=10,
-                        cost_bps=10.0,
-                        slippage_bps=5.0):
+def run_backtest_monthly(prices: pd.DataFrame,
+                         volumes: pd.DataFrame,
+                         benchmark: pd.Series | None,
+                         start_date,
+                         end_date,
+                         top_n=10,
+                         cost_bps=10.0,
+                         slippage_bps=5.0):
     idx = prices.index[(prices.index >= pd.to_datetime(start_date)) & (prices.index <= pd.to_datetime(end_date))]
     if len(idx) < 260:
         return pd.DataFrame(), pd.DataFrame()
 
-    rebal_days = weekly_first_trading_days(idx)
+    rebal_days = monthly_first_trading_days(idx)
     rebal_days = [d for d in rebal_days if d >= idx.min() and d <= idx.max()]
     if len(rebal_days) < 2:
         return pd.DataFrame(), pd.DataFrame()
@@ -304,12 +266,7 @@ slip_bps = st.sidebar.number_input("Slippage (bps)", min_value=0.0, value=5.0, s
 # Tabs
 # ======================================================================
 
-tab1, tab2, tab3, tab4 = st.tabs([
-    "🔬 Analyse",
-    "🧭 Handlungsempfehlungen",
-    "📈 Backtest (wöchentlich)",
-    "🏆 Champions (GeoPAK10 + Buffett)"
-])
+tab1, tab2, tab3 = st.tabs(["🔬 Analyse", "🧭 Handlungsempfehlungen", "📈 Backtest (monthly)"])
 
 with tab1:
     st.subheader("Analyse – Kennzahlen (gefiltert)")
@@ -326,14 +283,14 @@ with tab2:
     st.info("Hier könnten Kauf-/Verkaufsregeln ergänzt werden.")
 
 with tab3:
-    st.subheader("Backtest – wöchentlich")
+    st.subheader("Backtest – monthly")
     tickers_txt = st.text_input("Ticker für Backtest:", "AAPL, MSFT, TSLA, NVDA, META, AVGO")
     tickers = [t.strip().upper() for t in tickers_txt.split(",") if t.strip()]
     if tickers:
         prices, volumes = fetch_ohlc(tickers, start_date, end_date)
         bm_prices, _ = fetch_ohlc([benchmark_ticker], start_date, end_date)
         if st.button("▶️ Backtest starten"):
-            eq_df, logs_df = run_backtest_weekly(
+            eq_df, logs_df = run_backtest_monthly(
                 prices, volumes, bm_prices.iloc[:,0] if not bm_prices.empty else None,
                 start_date, end_date, top_n=top_n,
                 cost_bps=cost_bps, slippage_bps=slip_bps
@@ -347,24 +304,12 @@ with tab3:
                     bm_norm = bm_prices.iloc[:,0].loc[eq_df.index.min():eq_df.index.max()].dropna()
                     bm_norm = bm_norm / bm_norm.iloc[0]
                     ax.plot(bm_norm.index, bm_norm.values, label=f"Benchmark ({benchmark_ticker})", alpha=0.8)
-                ax.set_title("Equity-Kurve (wöchentliches Rebalancing)")
+                ax.set_title("Equity-Kurve (monthly Rebalancing)")
                 ax.grid(True, alpha=0.3)
                 ax.legend()
                 st.pyplot(fig)
 
                 st.dataframe(logs_df, use_container_width=True)
-                st.download_button("📥 Logs (CSV)", logs_df.to_csv(index=False).encode("utf-8"), "weekly_backtest_logs.csv", "text/csv")
-
-with tab4:
-    st.subheader("Champions – Sicherheits-Score & Buffett-Kriterien")
-    uploaded_champ = st.file_uploader("CSV mit Champions (Ticker, Name)", type=["csv"])
-    if uploaded_champ is not None:
-        df_champ = pd.read_csv(uploaded_champ)
-        if "Ticker" not in df_champ.columns:
-            st.error("CSV benötigt mindestens eine Spalte 'Ticker'.")
-        else:
-            st.info(f"{len(df_champ)} Champions aus CSV geladen.")
-            results = compute_champions_scores(df_champ["Ticker"].tolist())
-            st.dataframe(results, use_container_width=True)
+                st.download_button("📥 Logs (CSV)", logs_df.to_csv(index=False).encode("utf-8"), "monthly_backtest_logs.csv", "text/csv")
 
 st.caption("Nur Informations- und Ausbildungszwecke. Keine Anlageempfehlung.")
