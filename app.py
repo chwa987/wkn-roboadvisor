@@ -10,7 +10,8 @@ import yfinance as yf
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="Momentum-RoboAdvisor", page_icon="📈", layout="wide")
+import streamlit as st
+st.set_page_config(page_title="Champions Auswahl", page_icon="🏆", layout="wide")", page_icon="📈", layout="wide")
 
 # ============================================================
 # Utils
